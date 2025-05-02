@@ -303,7 +303,7 @@ class DOTPolicy(PreTrainedPolicy):
 
         return action
 
-    def forward(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
+    def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict]:
         lookback_ind = torch.randint(0, 2 * self.config.lookback_aug + 1, (1,)).item()
         for k in list(self.model.obs_mapping.values()) + list(self.image_names) + ["action", "action_is_pad"]:
             if k != "observation.images":
@@ -355,7 +355,7 @@ class DOTPolicy(PreTrainedPolicy):
         self.state_noise *= self.config.noise_decay
         self.crop_scale = 1 - (1 - self.crop_scale) * self.config.noise_decay
 
-        return loss_dict
+        return loss, loss_dict
 
     @classmethod
     def from_pretrained(cls, pretrained_name_or_path, *args, **kwargs):
