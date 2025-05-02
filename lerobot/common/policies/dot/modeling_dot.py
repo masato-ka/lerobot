@@ -349,7 +349,7 @@ class DOTPolicy(PreTrainedPolicy):
         # Apply padding, weights and decay to the loss
         loss = (loss * rev_padding * self.loss_weights).mean()
 
-        loss_dict = {"loss": loss}
+        loss_dict = {"loss": loss.item()}
 
         # Reduce the aggressiveness of augmentations
         self.state_noise *= self.config.noise_decay
