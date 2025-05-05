@@ -229,6 +229,9 @@ def control_loop(
     if events is None:
         events = {"exit_early": False}
 
+    if not len(events['condition']) == 1:
+        raise ValueError("The condition should be a single element.")
+
     if control_time_s is None:
         control_time_s = float("inf")
 
@@ -248,9 +251,10 @@ def control_loop(
 
         if teleoperate:
             observation, action = robot.teleop_step(record_data=True)
+            observation['observation.state'] = torch.cat((observation['observation.state'], torch.tensor(events['condition'])),dim=0)
         else:
             observation = robot.capture_observation()
-
+            observation['observation.state'] = torch.cat((observation['observation.state'], torch.tensor(events['condition'])),dim=0)
             if policy is not None:
                 pred_action = predict_action(
                     observation, policy, get_safe_torch_device(policy.config.device), policy.config.use_amp

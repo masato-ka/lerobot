@@ -278,7 +278,7 @@ def record(
         robot.connect()
 
     listener, events = init_keyboard_listener()
-
+    events["condition"] = [0.0]
     # Execute a few seconds without recording to:
     # 1. teleoperate the robot to move it in starting position if no policy provided,
     # 2. give times to the robot devices to connect and start synchronizing,
@@ -294,7 +294,11 @@ def record(
     while True:
         if recorded_episodes >= cfg.num_episodes:
             break
-
+        log_say("Which one do I pick?", cfg.play_sounds, blocking=True)
+        try:
+            events['condition'] = [float(input())]
+        except :
+            events['condition'] = [0.0]
         log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
         record_episode(
             robot=robot,
