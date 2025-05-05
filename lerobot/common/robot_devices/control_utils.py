@@ -264,6 +264,7 @@ def control_loop(
                 action = robot.send_action(pred_action)
                 action = {"action": action}
 
+
         if dataset is not None:
             frame = {**observation, **action, "task": single_task}
             dataset.add_frame(frame)
@@ -273,7 +274,7 @@ def control_loop(
             for k, v in action.items():
                 for i, vv in enumerate(v):
                     rr.log(f"sent_{k}_{i}", rr.Scalar(vv.numpy()))
-
+            rr.log("condition", rr.Scalar(events["condition"]))
             image_keys = [key for key in observation if "image" in key]
             for key in image_keys:
                 rr.log(key, rr.Image(observation[key].numpy()), static=True)
