@@ -185,7 +185,7 @@ class ManipulatorRobot:
     @property
     def motor_features(self) -> dict:
         action_names = self.get_motor_names(self.leader_arms)
-        state_names = self.get_motor_names(self.leader_arms) + ['condition']
+        state_names = self.get_motor_names(self.leader_arms) + ['target_x','target_y']
         return {
             "action": {
                 "dtype": "float32",

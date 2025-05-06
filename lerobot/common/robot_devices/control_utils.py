@@ -229,7 +229,7 @@ def control_loop(
     if events is None:
         events = {"exit_early": False}
 
-    if not len(events['condition']) == 1:
+    if not len(events['coordination']) == 2:
         raise ValueError("The condition should be a single element.")
 
     if control_time_s is None:
@@ -251,10 +251,10 @@ def control_loop(
 
         if teleoperate:
             observation, action = robot.teleop_step(record_data=True)
-            observation['observation.state'] = torch.cat((observation['observation.state'], torch.tensor(events['condition'])),dim=0)
+            observation['observation.state'] = torch.cat((observation['observation.state'], torch.tensor(events['coordination'])),dim=0)
         else:
             observation = robot.capture_observation()
-            observation['observation.state'] = torch.cat((observation['observation.state'], torch.tensor(events['condition'])),dim=0)
+            observation['observation.state'] = torch.cat((observation['observation.state'], torch.tensor(events['coordination'])),dim=0)
             if policy is not None:
                 pred_action = predict_action(
                     observation, policy, get_safe_torch_device(policy.config.device), policy.config.use_amp
@@ -274,7 +274,8 @@ def control_loop(
             for k, v in action.items():
                 for i, vv in enumerate(v):
                     rr.log(f"sent_{k}_{i}", rr.Scalar(vv.numpy()))
-            rr.log("condition", rr.Scalar(events["condition"]))
+            rr.log("target_x", rr.Scalar(events["coordination"][0]))
+            rr.log("target_y", rr.Scalar(events["coordination"][1]))
             image_keys = [key for key in observation if "image" in key]
             for key in image_keys:
                 rr.log(key, rr.Image(observation[key].numpy()), static=True)

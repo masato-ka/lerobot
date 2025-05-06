@@ -168,6 +168,7 @@ from lerobot.common.robot_devices.control_utils import (
 )
 from lerobot.common.robot_devices.robots.utils import Robot, make_robot_from_config
 from lerobot.common.robot_devices.utils import busy_wait, safe_disconnect
+from lerobot.common.utils.condition_training_utils import get_click_coordinates
 from lerobot.common.utils.utils import has_method, init_logging, log_say
 from lerobot.configs import parser
 
@@ -278,7 +279,7 @@ def record(
         robot.connect()
 
     listener, events = init_keyboard_listener()
-    events["condition"] = [0.0]
+    events["coordination"] = [0.0, 0.0]
     # Execute a few seconds without recording to:
     # 1. teleoperate the robot to move it in starting position if no policy provided,
     # 2. give times to the robot devices to connect and start synchronizing,
@@ -294,7 +295,16 @@ def record(
     while True:
         if recorded_episodes >= cfg.num_episodes:
             break
+
+        # Get cordination to set conditon to model.
         log_say("Which one do I pick?", cfg.play_sounds, blocking=True)
+        if not robot.is_connected:
+            robot.connect()
+        observation = robot.capture_observation()
+        image_keys = [key for key in observation if "image" in key]
+        for key in image_keys:
+            x,y = get_click_coordinates(observation[key])
+
         try:
             events['condition'] = [float(input())]
         except :
