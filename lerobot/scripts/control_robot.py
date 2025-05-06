@@ -304,11 +304,11 @@ def record(
         image_keys = [key for key in observation if "image" in key]
         for key in image_keys:
             x,y = get_click_coordinates(observation[key])
-
-        try:
-            events['condition'] = [float(input())]
-        except :
-            events['condition'] = [0.0]
+        events["coordination"] = [x,y]
+        # try:
+        #     events['condition'] = [float(input())]
+        # except :
+        #     events['condition'] = [0.0]
         log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
         record_episode(
             robot=robot,

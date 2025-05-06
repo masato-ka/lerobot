@@ -62,23 +62,31 @@ def get_click_coordinates(
         img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
 
     # ---------- 5) コールバック設定 ----------
+    global click
     click = {"pt": None}
 
     def _on_mouse(event, x, y, _flags, _param):
+        global click
         if event == cv2.EVENT_LBUTTONDOWN:
             click["pt"] = (x, y)
+            print(f"x={x}, y={y}")
 
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.setMouseCallback(window_name, _on_mouse)
     cv2.imshow(window_name, img_np)
-
+    cv2.waitKey(1)
     # ---------- 6) クリック待ち (ブロック) ----------
     while click["pt"] is None:
+        if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+            break
         key = cv2.waitKey(20) & 0xFF
         if key == 27:  # ESC
             break
-
+    cv2.setMouseCallback(window_name, lambda *args: None)
     cv2.destroyWindow(window_name)
+    cv2.waitKey(1)
+
+    cv2.waitKey(1)
 
     if click["pt"] is None:
         raise RuntimeError("クリックせずに終了しました。")
