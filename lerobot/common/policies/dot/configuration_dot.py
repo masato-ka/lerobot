@@ -29,7 +29,7 @@ class DOTConfig(PreTrainedConfig):
     train_horizon: int = 20
     inference_horizon: int = 20
     lookback_obs_steps: int = 10
-    lookback_aug: int = 5
+    lookback_aug: int = 0
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
