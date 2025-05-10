@@ -196,6 +196,7 @@ def record_episode(
     policy,
     fps,
     single_task,
+    task_embeddings,
 ):
     control_loop(
         robot=robot,
@@ -207,6 +208,7 @@ def record_episode(
         fps=fps,
         teleoperate=policy is None,
         single_task=single_task,
+        task_embeddings=task_embeddings
     )
 
 
@@ -221,6 +223,7 @@ def control_loop(
     policy: PreTrainedPolicy = None,
     fps: int | None = None,
     single_task: str | None = None,
+    task_embeddings: torch.Tensor | None = None,
 ):
     # TODO(rcadene): Add option to record logs
     if not robot.is_connected:
@@ -262,7 +265,7 @@ def control_loop(
                 action = {"action": action}
 
         if dataset is not None:
-            frame = {**observation, **action, "task": single_task}
+            frame = {**observation, **action, "task": single_task, "observation.instruction": task_embeddings}
             dataset.add_frame(frame)
 
         # TODO(Steven): This should be more general (for RemoteRobot instead of checking the name, but anyways it will change soon)

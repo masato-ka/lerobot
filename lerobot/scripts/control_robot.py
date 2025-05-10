@@ -141,6 +141,7 @@ from dataclasses import asdict
 from pprint import pformat
 
 import rerun as rr
+from sentence_transformers import SentenceTransformer
 
 # from safetensors.torch import load_file, save_file
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
@@ -290,6 +291,11 @@ def record(
     if has_method(robot, "teleop_safety_stop"):
         robot.teleop_safety_stop()
 
+    if cfg.record_embeddings:
+        sentences = [cfg.single_task]
+        model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
+        embeddings = model.encode(sentences, convert_to_tensor=True, device='cpu')
+
     recorded_episodes = 0
     while True:
         if recorded_episodes >= cfg.num_episodes:
@@ -305,6 +311,7 @@ def record(
             policy=policy,
             fps=cfg.fps,
             single_task=cfg.single_task,
+            task_embeddings=embeddings
         )
 
         # Execute a few seconds without recording to give time to manually reset the environment

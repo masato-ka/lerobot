@@ -66,6 +66,10 @@ This dataset was created using [LeRobot](https://github.com/huggingface/lerobot)
 
 """
 
+INSTRUCTION_FUTURES={
+    "observation.instruction": {"dtype": "float32", "shape": (1, 768), "names": ['row', 'embedding']},
+}
+
 DEFAULT_FEATURES = {
     "timestamp": {"dtype": "float32", "shape": (1,), "names": None},
     "frame_index": {"dtype": "int64", "shape": (1,), "names": None},
@@ -387,13 +391,15 @@ def get_hf_features_from_features(features: dict) -> datasets.Features:
     return datasets.Features(hf_features)
 
 
-def get_features_from_robot(robot: Robot, use_videos: bool = True) -> dict:
+def get_features_from_robot(robot: Robot, use_videos: bool = True, use_instruction: bool= True) -> dict:
     camera_ft = {}
     if robot.cameras:
         camera_ft = {
             key: {"dtype": "video" if use_videos else "image", **ft}
             for key, ft in robot.camera_features.items()
         }
+    if use_instruction:
+        return {**robot.motor_features, ** camera_ft, **INSTRUCTION_FUTURES, **DEFAULT_FEATURES}
     return {**robot.motor_features, **camera_ft, **DEFAULT_FEATURES}
 
 
