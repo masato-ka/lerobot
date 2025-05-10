@@ -23,7 +23,7 @@ class FeatureType(str, Enum):
     VISUAL = "VISUAL"
     ENV = "ENV"
     ACTION = "ACTION"
-
+    INST = "INST" #言語位置埋め込み
 
 class NormalizationMode(str, Enum):
     MIN_MAX = "MIN_MAX"
