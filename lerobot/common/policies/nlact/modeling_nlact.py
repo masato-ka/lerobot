@@ -358,7 +358,7 @@ class ACT(nn.Module):
             )
         if self.config.inst_state_feature:
             self.encoder_inst_input_proj = nn.Linear(
-                self.config.inst_state_feature.shape[1], config.dim_model
+                self.config.inst_state_feature.shape[0], config.dim_model
         )
         self.encoder_latent_input_proj = nn.Linear(config.latent_dim, config.dim_model)
         if self.config.image_features:
@@ -474,9 +474,13 @@ class ACT(nn.Module):
             latent_sample = torch.zeros([batch_size, self.config.latent_dim], dtype=torch.float32).to(
                 batch["observation.state"].device
             )
-
-        # Prepare transformer encoder inputs.
-        encoder_in_tokens = [self.encoder_latent_input_proj(latent_sample)]
+        # Instruction state token.
+        if self.config.inst_state_feature:
+            encoder_in_tokens=[self.encoder_inst_input_proj(batch["observation.inst_state"])]
+            encoder_in_tokens.append(self.encoder_latent_input_proj(latent_sample))
+        else:
+            # Prepare transformer encoder inputs.
+            encoder_in_tokens = [self.encoder_latent_input_proj(latent_sample)]
         encoder_in_pos_embed = list(self.encoder_1d_feature_pos_embed.weight.unsqueeze(1))
         # Robot state token.
         if self.config.robot_state_feature:
@@ -485,11 +489,6 @@ class ACT(nn.Module):
         if self.config.env_state_feature:
             encoder_in_tokens.append(
                 self.encoder_env_state_input_proj(batch["observation.environment_state"])
-            )
-        if self.config.inst_state_feature:
-            batch["observation.instruction"] = batch["observation.instruction"].reshape(batch['observation.instruction'].shape[0], batch['observation.instruction'].shape[2])
-            encoder_in_tokens.append(
-                self.encoder_inst_input_proj(batch["observation.instruction"])
             )
         # Camera observation features and positional embeddings.
         if self.config.image_features:

@@ -88,7 +88,7 @@ class RecordControlConfig(ControlConfig):
     # Resume recording on an existing dataset.
     resume: bool = False
     # Record language embeddings from single_task.
-    record_embeddings: bool = False
+    record_embeddings: bool = True
 
     def __post_init__(self):
         # HACK: We parse again the cli args here to get the pretrained path if there was one.
