@@ -358,7 +358,7 @@ class ACT(nn.Module):
             )
         if self.config.inst_state_feature:
             self.encoder_inst_input_proj = nn.Linear(
-                self.config.inst_state_feature.shape[0], config.dim_model
+                self.config.inst_state_feature.shape[1], config.dim_model
         )
         self.encoder_latent_input_proj = nn.Linear(config.latent_dim, config.dim_model)
         if self.config.image_features:
@@ -487,6 +487,7 @@ class ACT(nn.Module):
                 self.encoder_env_state_input_proj(batch["observation.environment_state"])
             )
         if self.config.inst_state_feature:
+            batch["observation.instruction"] = batch["observation.instruction"].reshape(batch['observation.instruction'].shape[0], batch['observation.instruction'].shape[2])
             encoder_in_tokens.append(
                 self.encoder_inst_input_proj(batch["observation.instruction"])
             )
