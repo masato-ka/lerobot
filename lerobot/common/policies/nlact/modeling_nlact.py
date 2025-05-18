@@ -360,7 +360,7 @@ class ACT(nn.Module):
             )
         if self.config.inst_state_feature:
             self.encoder_inst_input_proj = nn.Linear(
-                self.config.inst_state_feature.shape[0], config.dim_model
+                self.config.inst_state_feature.shape[1], config.dim_model
         )
         self.encoder_latent_input_proj = nn.Linear(config.latent_dim, config.dim_model)
         if self.config.image_features:
