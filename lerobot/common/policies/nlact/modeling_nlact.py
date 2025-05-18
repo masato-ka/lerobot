@@ -145,7 +145,7 @@ class NLACTPolicy(PreTrainedPolicy):
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict]:
         """Run the batch through the model and compute the loss for training or validation."""
         #TODO Datasetproblems
-        batch['observation.instruction'] = batch['observation.instruction'].reshape(8,768) if batch['observation.instruction'].shape == (8, 1, 768) else batch['observation.instruction']
+        batch['observation.instruction'] = batch['observation.instruction'].reshape(batch['observation.instruction'].shape[0],batch['observation.instruction'].shape[2])
         batch = self.normalize_inputs(batch)
         if self.config.image_features:
             batch = dict(batch)  # shallow copy so that adding a key doesn't modify the original
