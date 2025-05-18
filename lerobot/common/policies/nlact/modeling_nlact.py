@@ -476,7 +476,7 @@ class ACT(nn.Module):
             )
         # Instruction state token.
         if self.config.inst_state_feature:
-            encoder_in_tokens=[self.encoder_inst_input_proj(batch["observation.inst_state"])]
+            encoder_in_tokens=[self.encoder_inst_input_proj(batch["observation.instruction"])]
             encoder_in_tokens.append(self.encoder_latent_input_proj(latent_sample))
         else:
             # Prepare transformer encoder inputs.

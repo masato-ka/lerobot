@@ -100,7 +100,7 @@ class NLACTConfig(PreTrainedConfig):
             "VISUAL": NormalizationMode.MEAN_STD,
             "STATE": NormalizationMode.MEAN_STD,
             "ACTION": NormalizationMode.MEAN_STD,
-        }
+            "INST":NormalizationMode.MEAN_STD        }
     )
 
     # Architecture.
