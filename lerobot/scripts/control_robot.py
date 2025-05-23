@@ -293,7 +293,7 @@ def record(
 
     if cfg.record_embeddings:
         sentences = [cfg.single_task]
-        model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
+        model = SentenceTransformer('intfloat/multilingual-e5-small')
         embeddings = model.encode(sentences, convert_to_tensor=True, device='cpu').squeeze(0)
 
     recorded_episodes = 0
