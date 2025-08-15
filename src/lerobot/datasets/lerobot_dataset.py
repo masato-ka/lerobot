@@ -341,8 +341,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         download_videos: bool = True,
         video_backend: str | None = None,
         batch_encoding_size: int = 1,
-        reward_start_pct: float | None = None,
-        reward_end_pct: float | None = None,
+        reward_start_pct: float | None = 0.05,
+        reward_end_pct: float | None = 0.95,
     ):
         """
         2 modes are available for instantiating this class, depending on 2 different use cases:
