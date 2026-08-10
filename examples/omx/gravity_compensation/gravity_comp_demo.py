@@ -16,9 +16,9 @@ continuously commands `Goal_Current` from three combined terms:
 SAFETY -- read before running:
   1. Run `preview_gravity_model.py` first and confirm the printed torques/angles look
      physically sensible for your arm. This script trusts that mapping blindly.
-  2. `JOINT_LIMIT_RANGE` below is a conservative PLACEHOLDER, not measured on your specific
-     leader unit. Run `find_leader_joint_range.py` first and replace it with your measured
-     range before relying on the barrier for real protection.
+  2. `JOINT_LIMIT_RANGE` below was measured with `find_leader_joint_range.py` on one specific
+     leader unit. If you're running a different physical arm, re-measure and replace it before
+     relying on the barrier for real protection.
   3. Support the arm by hand before starting. `--modifier` defaults to a conservative 0.09
      (per-joint requirements vary a lot -- e.g. shoulder_lift typically needs noticeably more
      than the rest, wrist_roll needs close to none); increase gradually while feeling whether
@@ -68,10 +68,16 @@ KT_NM_PER_A = 0.36
 # resists manual operation -- so it defaults to uncompensated unless explicitly overridden.
 DEFAULT_JOINT_MODIFIER_OVERRIDES: dict[str, float] = {"wrist_roll": 0.0}
 
-# PLACEHOLDER safe range (normalized position units, per joint). NOT measured against any
-# specific leader unit -- run find_leader_joint_range.py and replace these before trusting the
-# barrier for real protection.
-JOINT_LIMIT_RANGE: dict[str, tuple[float, float]] = dict.fromkeys(ARM_JOINTS, (-40.0, 40.0))
+# Safe range (normalized position units, per joint), measured on this leader unit with
+# find_leader_joint_range.py. wrist_roll is a continuous-rotation joint (no meaningful
+# mechanical limit within the normalized range), hence the near-full-range values.
+JOINT_LIMIT_RANGE: dict[str, tuple[float, float]] = {
+    "shoulder_pan": (-52.4, 50.9),
+    "shoulder_lift": (-68.0, 48.2),
+    "elbow_flex": (-59.3, 54.3),
+    "wrist_flex": (-48.8, 50.3),
+    "wrist_roll": (-100.0, 100.0),
+}
 
 # Subtracted from JOINT_LIMIT_RANGE so the barrier starts pushing back a bit before the
 # configured limit rather than right at it.
@@ -197,7 +203,7 @@ def main():
         print(
             f"Current Control Mode enabled (current_limit={args.current_limit_ma}mA).\n"
             f"modifiers: {modifier_row}\n"
-            f"joint_limit_range (PLACEHOLDER, see find_leader_joint_range.py): {limit_row}\n"
+            f"joint_limit_range: {limit_row}\n"
             "Ctrl+C to stop.\n"
         )
         while True:
