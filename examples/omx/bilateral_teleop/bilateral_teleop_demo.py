@@ -21,16 +21,23 @@ SAFETY notes, which all still apply here).
 `tau_ext` uses the follower's raw per-joint sensing units (see
 src/lerobot/force_estimation/README.md), not Nm, and its sign relative to "which direction the
 leader should push back" is unverified -- `feedback_gain` is deliberately allowed to be
-negative so a backwards joint can just have its sign flipped during tuning.
+negative so a backwards joint can just have its sign flipped during tuning. Confirmed on
+hardware: `tau_ext`'s sign is opposite the intuitive "push back the same way" direction, so a
+*negative* `--feedback_gain` (e.g. `-0.3`) is what actually renders correctly here -- both
+leader and follower have every arm joint's `Drive_Mode` set the same way (`NON_INVERTED`), so
+this flip is expected to be uniform across joints rather than needing a different sign per
+joint, but verify per joint if some feel backwards after the global flip.
 
-Usage (run from repo root):
+Usage (run from repo root; --feedback_gain -0.3 is the value confirmed to render force
+feedback in the correct direction on one unit -- still increase it gradually from 0.0 on a new
+arm rather than starting here blind):
     python -m examples.omx.bilateral_teleop.bilateral_teleop_demo \\
         --follower_port /dev/ttyACM0 --follower_id omx_follower \\
         --leader_port /dev/ttyACM1 --leader_id omx_leader \\
         --urdf_path /path/to/omx_l.urdf --checkpoint checkpoints/omx_next.pt \\
         --modifier 0.09 --modifier_shoulder_lift 0.15 \\
         --damping_gain 0.15 --joint_limit_kp 3 --joint_limit_kd 0 \\
-        --feedback_gain 0.0
+        --feedback_gain -0.3
 """
 
 import argparse
