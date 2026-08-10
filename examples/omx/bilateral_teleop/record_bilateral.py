@@ -23,7 +23,8 @@ Usage (run from repo root):
         --modifier 0.09 --modifier_shoulder_lift 0.15 \\
         --damping_gain 0.15 --joint_limit_kp 3 --joint_limit_kd 0 --feedback_gain -0.3 \\
         --repo_id <hf_username>/omx_bilateral_force --root data/omx_bilateral_force \\
-        --num_episodes 10 --episode_duration_s 30 --single_task "Pick up the cube"
+        --num_episodes 10 --episode_duration_s 30 --single_task "Pick up the cube" \\
+        --push_to_hub --hub_private --hub_tags omx bilateral force
 """
 
 import argparse
@@ -109,7 +110,17 @@ def main():
         "--fps", type=int, default=30, help="Recorded dataset fps (independent of --hz, the control rate)"
     )
     parser.add_argument("--no_video", action="store_true", help="Store camera frames as images, not video")
-    parser.add_argument("--push_to_hub", action="store_true")
+    parser.add_argument(
+        "--push_to_hub",
+        action="store_true",
+        help="Upload the finished dataset to the Hugging Face Hub once recording ends",
+    )
+    parser.add_argument(
+        "--hub_private", action="store_true", help="Create the Hub repo as private (only with --push_to_hub)"
+    )
+    parser.add_argument(
+        "--hub_tags", nargs="+", default=None, help="Tags for the Hub dataset card (only with --push_to_hub)"
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -234,8 +245,11 @@ def main():
             follower.disconnect()
         dataset.finalize()
 
-    if args.push_to_hub:
-        dataset.push_to_hub()
+    if args.push_to_hub and dataset.num_episodes > 0:
+        print(f"Pushing {dataset.num_episodes} episode(s) to the Hub: {args.repo_id}")
+        dataset.push_to_hub(tags=args.hub_tags, private=args.hub_private or None)
+    elif args.push_to_hub:
+        print("Skipping push_to_hub: no episodes were recorded.")
 
     return dataset
 
