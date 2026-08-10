@@ -44,11 +44,19 @@ from .common import ARM_JOINTS
 
 logger = logging.getLogger(__name__)
 
-# Validated joint-space envelope, reused as-is from examples/omx/record_grab.py's
-# `_random_stuck_pose()`: shoulder_pan and wrist_roll are safe as independent axes, but
-# elbow_flex must stay within `safe_elbow_flex_range(shoulder_lift)` and wrist_flex is
-# always derived from (shoulder_lift, elbow_flex) rather than swept independently.
-SHOULDER_PAN_RANGE = (-5.0, 35.0)
+# elbow_flex must stay within `safe_elbow_flex_range(shoulder_lift)` (validated envelope from
+# examples/omx/record_grab.py's `_random_stuck_pose()`) and wrist_flex is always derived from
+# (shoulder_lift, elbow_flex) rather than swept independently -- see safe_pose() below.
+#
+# shoulder_pan and wrist_roll are rotations about the arm's own axes: unlike shoulder_lift/
+# elbow_flex, panning/rolling doesn't by itself drive the wrist toward the base plate, so
+# their safe range is primarily about clearance in *your* physical setup (cables, mounts,
+# nearby objects) rather than the arm's own kinematics. SHOULDER_PAN_RANGE was originally
+# (-5.0, 35.0) (reusing _random_stuck_pose()'s task-specific bias toward one side); widened
+# here to a symmetric +-35 deg now that +35 deg has been run and confirmed clear. Re-verify
+# clearance on the newly-added side (-35 to -5 deg) before running unattended, same as any
+# other range change here.
+SHOULDER_PAN_RANGE = (-35.0, 35.0)
 SHOULDER_LIFT_RANGE = (-50.0, 30.0)
 WRIST_ROLL_RANGE = (-15.0, 15.0)
 WRIST_FLEX_JITTER_RANGE = (-15.0, 15.0)
