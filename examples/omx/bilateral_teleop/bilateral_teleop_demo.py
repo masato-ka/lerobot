@@ -127,12 +127,16 @@ def main():
         while True:
             loop_start = time.perf_counter()
 
-            # 1. Leader position -> follower (position teleop).
+            # 1. Leader position -> follower (position teleop). Includes the gripper --
+            # ARM_JOINTS is arm-only (used for the force/safety terms below), but the
+            # follower's gripper still needs to track the leader's trigger position.
             leader_pos = leader.bus.sync_read("Present_Position")
             leader_vel = leader.bus.sync_read("Present_Velocity")
             q_leader = {j: leader_pos[j] for j in ARM_JOINTS}
             qdot_leader = {j: leader_vel[j] for j in ARM_JOINTS}
-            follower.send_action({f"{j}.pos": q_leader[j] for j in ARM_JOINTS})
+            follower_action = {f"{j}.pos": q_leader[j] for j in ARM_JOINTS}
+            follower_action["gripper.pos"] = leader_pos["gripper"]
+            follower.send_action(follower_action)
 
             # 2. Follower state -> tau_ext (goal_q is what we just commanded above).
             follower_pos = follower.bus.sync_read("Present_Position")
@@ -168,9 +172,14 @@ def main():
             loop_count += 1
             elapsed_total = time.perf_counter() - rate_check_start
             if elapsed_total >= 1.0:
+                # Scrolling (not overwritten) on purpose: push on the follower and scroll back
+                # to see whether tau_ext actually moved, and by how much relative to the noise
+                # floor (~15, see src/lerobot/force_estimation/README.md) and --feedback_limit_ma.
                 actual_hz = loop_count / elapsed_total
-                row = "  ".join(f"{j}={goal_current_ma[j]:+5d}mA" for j in ARM_JOINTS)
-                print(f"\r[{actual_hz:5.1f}Hz] goal_current {row}", end="", flush=True)
+                tau_ext_row = "  ".join(f"{j}={tau_ext[j]:+7.1f}" for j in ARM_JOINTS)
+                current_row = "  ".join(f"{j}={goal_current_ma[j]:+5d}mA" for j in ARM_JOINTS)
+                print(f"[{actual_hz:5.1f}Hz] tau_ext      {tau_ext_row}")
+                print(f"          goal_current {current_row}")
                 loop_count = 0
                 rate_check_start = time.perf_counter()
 
