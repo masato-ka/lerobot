@@ -50,6 +50,18 @@ uv run python -m examples.omx.force_sensing.demo_force_sensing \
 
 ## 既知の制約・注意点
 
+- **`shoulder_lift` と `elbow_flex` は独立した軸ではありません。** この2軸を単純な矩形範囲で
+  独立にスイープすると、手首/グリッパがベースプレート方向に衝突し、モータの過負荷保護が
+  作動して停止することがあります (実際に発生した不具合)。`collect_free_motion.py` は
+  `examples/omx/record_grab.py` の `_random_stuck_pose()` で検証済みの区分線形の連動範囲
+  (`safe_elbow_flex_range(shoulder_lift)`) を再利用し、`elbow_flex` を常に現在の
+  `shoulder_lift` に応じた安全範囲へクランプし、`wrist_flex` も
+  `horizontal_wrist_flex(shoulder_lift, elbow_flex)` から連動して計算しています。また、
+  `Hardware_Error_Status`/`Torque_Enable` を毎セグメント後に監視し、過負荷保護が作動したら
+  即座に収集を中断してその時点までのログを保存するようにしています。
+  この連動範囲はあくまで既存コードで検証済みの1パターンであり、お使いの設置環境
+  (取り付け高さ・配線・周囲の障害物) によっては安全でない可能性があります。初回は
+  `--duration_min` を短く設定し、電源スイッチにすぐ手が届く状態で挙動を確認してください。
 - **物理単位 (Nm) には較正していません。** Follower の `shoulder_pan/shoulder_lift/elbow_flex`
   は XL430-W250 で、`Present_Current` として読める値は実際には ROBOTIS e-manual 上
   "Present Load" (内部PWMデューティ比から推定した負荷率, 単位0.1%) です。一方
