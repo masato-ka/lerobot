@@ -22,6 +22,9 @@ wrist_roll`)。グリッパは Current-based Position 制御で独自の把持�
               ▼
 3. リアルタイム外力推定デモ    examples/omx/force_sensing/demo_force_sensing.py
    (アームを一定姿勢に保持しつつ τ_ext をコンソール表示)
+
+   (検証用)                    examples/omx/force_sensing/evaluate_free_motion.py
+   (収集済みログをそのまま推論に流し、接触なし区間で τ_ext ≈ 0 になるか確認)
 ```
 
 コアの再利用可能ロジック (`NextTorqueEstimator`, `NextWindowDataset`, `train_next`,
@@ -46,6 +49,11 @@ uv run python -m examples.omx.force_sensing.train_next \
 # 3. リアルタイム外力推定デモ (各関節を素手で押して反応を確認)
 uv run python -m examples.omx.force_sensing.demo_force_sensing \
     --port /dev/ttyACM0 --checkpoint checkpoints/omx_next.pt
+
+# (検証用) 収集済みログをそのまま推論に流し、joint別に mean/std/max|.| を表示
+uv run python -m examples.omx.force_sensing.evaluate_free_motion \
+    --checkpoint checkpoints/omx_next.pt \
+    --data data/omx_free_motion/run1.npz data/omx_free_motion/run2.npz
 ```
 
 ## 既知の制約・注意点
@@ -87,11 +95,20 @@ uv run python -m examples.omx.force_sensing.demo_force_sensing \
 
 ## 検証方法
 
-- 学習後、収集データ自体を推論にかけ、接触の無い区間で `τ_ext ≈ 0` (ノイズレベル程度) に
-  なることを確認してください。
-- `demo_force_sensing.py` を実行し、各関節を個別に軽く/強く押して `τ_ext` の符号・大小が
-  力の向き・強さと定性的に一致するかを確認してください。特に XL430 (load%ベース) と XL330
-  (電流ベース) で応答性に差が出ないか比較すると良いです。
+- **`evaluate_free_motion.py` で接触なしデータを流す**: 学習に使った (または学習に使って
+  いない、より厳密な検証なら別途収集した) 自由運動ログをそのまま推論に流し、関節ごとに
+  `mean` / `std` / `max|.|` を表示します。接触が無いはずのデータなので、これらの値が
+  0付近の小さな値に収まっていれば「自由空間モデルが安定してフィットしている」ことの
+  裏付けになります。目安として、収集中に動いていた区間で観測される `Present_Current` の
+  変動幅 (収集ログの `current` 列を見て確認できます) と比べて、ここでの `std`/`max|.|` が
+  十分小さければ (数% 程度以下) 良好、動作時の変動幅と同程度かそれより大きい場合は
+  データ不足や過学習/未学習を疑ってください。
+- **`demo_force_sensing.py` で接触ありの反応を確認**: 各関節を個別に軽く/強く押して、
+  `τ_ext` の符号・大小が力の向き・強さと定性的に一致するかを確認してください。真に意味の
+  ある結果かどうかは、この接触時の値が `evaluate_free_motion.py` で見た「接触なしのノイズ
+  水準」よりも明確に大きいかどうかで判断してください — ノイズ水準と同程度の値しか出ない
+  場合は、モデルが接触を検出できていない可能性があります。特に XL430 (load%ベース) と
+  XL330 (電流ベース) で応答性に差が出ないかも比較すると良いです。
 
 ## 将来のバイラテラル制御・重力補償フェーズへの拡張ポイント
 

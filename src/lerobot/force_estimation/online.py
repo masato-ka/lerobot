@@ -48,6 +48,9 @@ class OnlineExternalTorqueEstimator:
         - **joint_names** (`list[str]`) -- Joint names, in the order expected by `update`'s dict
           arguments.
         - **history_length** (`int`) -- Number of past timesteps the model requires.
+        - **resample_hz** (`float`) -- Uniform sampling rate the training data was resampled to
+          (see [`~force_estimation.resample_uniform`]); replaying logged episodes for
+          evaluation should resample to this same rate first.
     """
 
     def __init__(self, checkpoint_path: str | Path, device: str | None = None):
@@ -58,6 +61,7 @@ class OnlineExternalTorqueEstimator:
 
         self.joint_names: list[str] = list(checkpoint["joint_names"])
         self.history_length: int = checkpoint["history_length"]
+        self.resample_hz: float = checkpoint["resample_hz"]
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
         self.model = NextTorqueEstimator(
