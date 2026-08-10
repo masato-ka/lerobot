@@ -24,6 +24,13 @@ SAFETY -- read before running:
      than the rest, wrist_roll needs close to none); increase gradually while feeling whether
      the arm gets lighter, rather than jumping to a large value. Same approach for
      `--damping_gain`/`--joint_limit_kp`/`--joint_limit_kd`: all default small, tune upward.
+     Note that `--damping_gain` applies across the *entire* range (not just near the joint
+     limits), so a value that's too high makes manual operation feel uniformly heavy rather
+     than just damping motion near the limits -- if that happens, turn it down before touching
+     the joint-limit gains. The joint-limit barrier itself can ring/oscillate right at the
+     wall if `--joint_limit_kp` is too high for this loop's rate + Dynamixel bus latency;
+     lower `kp` first, and only add `--joint_limit_kd` back in if the wall still feels too
+     bouncy once `kp` is reasonable.
   4. `--current_limit_ma` is a hard per-joint ceiling independent of all the gains above, in
      case a gain/sign mapping is wrong. Keep it conservative until you've validated behavior.
   5. Ctrl+C (or any exception) always disables torque and restores the arm to
@@ -36,12 +43,13 @@ defaults to `0.0` (its gravity torque is close to zero at every pose, and any no
 there tends to just get in the way of manual operation) -- pass `--modifier_wrist_roll`
 explicitly if you want it compensated too.
 
-Usage (run from repo root):
+Usage (run from repo root; defaults below are the values confirmed comfortable -- oscillation-
+free at the joint limits, no perceptible extra weight during normal operation -- on one unit):
     python -m examples.omx.gravity_compensation.gravity_comp_demo \\
         --port /dev/ttyACM1 --robot_id omx_leader \\
         --urdf_path /path/to/omx_l.urdf \\
         --modifier 0.09 --modifier_shoulder_lift 0.15 \\
-        --damping_gain 1.0 --joint_limit_kp 10.0 --joint_limit_kd 2.0
+        --damping_gain 0.15 --joint_limit_kp 3 --joint_limit_kd 0
 """
 
 import argparse
@@ -165,12 +173,12 @@ def main():
     parser.add_argument("--robot_id", default="omx_leader")
     parser.add_argument("--urdf_path", required=True, help="Path to a local copy of omx_l.urdf")
     parser.add_argument("--modifier", type=float, default=0.09, help="Default gravity-comp gain")
-    parser.add_argument("--damping_gain", type=float, default=1.0, help="Default velocity damping gain")
+    parser.add_argument("--damping_gain", type=float, default=0.15, help="Default velocity damping gain")
     parser.add_argument(
-        "--joint_limit_kp", type=float, default=10.0, help="Default joint-limit barrier P gain"
+        "--joint_limit_kp", type=float, default=3.0, help="Default joint-limit barrier P gain"
     )
     parser.add_argument(
-        "--joint_limit_kd", type=float, default=2.0, help="Default joint-limit barrier D gain"
+        "--joint_limit_kd", type=float, default=0.0, help="Default joint-limit barrier D gain"
     )
     for prefix in ("modifier", "damping_gain", "joint_limit_kp", "joint_limit_kd"):
         for joint in ARM_JOINTS:
