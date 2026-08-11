@@ -16,6 +16,13 @@ Episode control is intentionally simple for this experimental stage: each episod
 fixed `--episode_duration_s`, and Ctrl+C stops recording early (saving whatever was captured in
 the in-progress episode first). No keyboard-driven start/stop/re-record like `lerobot-record`.
 
+No cameras are attached unless `--cameras` is given -- without it, `observation.state` (position
++ force) is recorded but there is no visual observation, which most policies (ACT included) need
+to be useful. `--cameras` takes the same YAML-ish dict-of-dataclass syntax as
+`examples/omx/record_grab.py`'s `--robot.cameras=...`, decoded via `draccus.decode(dict[str,
+CameraConfig], ...)` so any registered camera backend (not just OpenCV) works, e.g.:
+    --cameras="{ wrist: {type: opencv, index_or_path: 6, width: 640, height: 480, fps: 30, fourcc: MJPG} }"
+
 Usage (run from repo root):
     python -m examples.omx.bilateral_teleop.record_bilateral \\
         --follower_port /dev/ttyACM0 --leader_port /dev/ttyACM1 \\
@@ -24,6 +31,7 @@ Usage (run from repo root):
         --damping_gain 0.15 --joint_limit_kp 3 --joint_limit_kd 0 --feedback_gain -0.3 \\
         --repo_id <hf_username>/omx_bilateral_force --root data/omx_bilateral_force \\
         --num_episodes 10 --episode_duration_s 30 --single_task "Pick up the cube" \\
+        --cameras="{ wrist: {type: opencv, index_or_path: 6, width: 640, height: 480, fps: 30, fourcc: MJPG}, top: {type: opencv, index_or_path: 4, width: 640, height: 480, fps: 30, fourcc: MJPG} }" \\
         --push_to_hub --hub_private --hub_tags omx bilateral force
 """
 
@@ -31,6 +39,11 @@ import argparse
 import logging
 import time
 
+import draccus
+import yaml
+
+from lerobot.cameras import CameraConfig
+from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401  registers the "opencv" choice
 from lerobot.datasets import (
     LeRobotDataset,
     VideoEncodingManager,
@@ -58,6 +71,14 @@ from lerobot.utils.feature_utils import build_dataset_frame, combine_feature_dic
 from .bilateral_teleop_demo import add_leader_control_args
 
 logger = logging.getLogger(__name__)
+
+
+def parse_cameras(raw: str | None) -> dict[str, CameraConfig]:
+    """Parse a `--cameras` value (record_grab.py-style YAML-ish dict-of-dataclass string) into
+    `{name: CameraConfig}`. Returns `{}` if `raw` is `None`."""
+    if raw is None:
+        return {}
+    return draccus.decode(dict[str, CameraConfig], yaml.safe_load(raw))
 
 
 def build_dataset_features(follower: OmxFollower, use_videos: bool) -> dict:
@@ -90,6 +111,15 @@ def main():
     )
     parser.add_argument("--follower_port", default="/dev/ttyACM0")
     parser.add_argument("--follower_id", default="omx_follower")
+    parser.add_argument(
+        "--cameras",
+        default=None,
+        help=(
+            "USB camera(s) to attach to the follower, e.g. "
+            "'{ wrist: {type: opencv, index_or_path: 6, width: 640, height: 480, fps: 30, fourcc: MJPG} }'. "
+            "Omit to record without any visual observation."
+        ),
+    )
     parser.add_argument("--leader_port", default="/dev/ttyACM1")
     parser.add_argument("--leader_id", default="omx_leader")
     parser.add_argument("--urdf_path", required=True, help="Path to a local copy of omx_l.urdf")
@@ -131,7 +161,10 @@ def main():
     joint_limit_kd = resolve_per_joint(args, "joint_limit_kd", args.joint_limit_kd)
     feedback_gains = resolve_per_joint(args, "feedback_gain", args.feedback_gain)
 
-    follower = OmxFollower(OmxFollowerConfig(port=args.follower_port, id=args.follower_id))
+    cameras = parse_cameras(args.cameras)
+    if not cameras:
+        logger.warning("No --cameras given; recording without any visual observation.")
+    follower = OmxFollower(OmxFollowerConfig(port=args.follower_port, id=args.follower_id, cameras=cameras))
     leader = OmxLeader(OmxLeaderConfig(port=args.leader_port, id=args.leader_id))
     follower.connect(calibrate=True)
     leader.connect(calibrate=True)
