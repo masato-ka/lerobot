@@ -16,6 +16,10 @@ Episode control is intentionally simple for this experimental stage: each episod
 fixed `--episode_duration_s`, and Ctrl+C stops recording early (saving whatever was captured in
 the in-progress episode first). No keyboard-driven start/stop/re-record like `lerobot-record`.
 
+Pass `--resume` to append `--num_episodes` more episodes onto an existing dataset at `--root`
+(via `LeRobotDataset.resume()`) instead of creating a new one -- useful for continuing a
+recording session across multiple runs. `--resume` requires `--root` to be set explicitly.
+
 No cameras are attached unless `--cameras` is given -- without it, `observation.state` (position
 + force) is recorded but there is no visual observation, which most policies (ACT included) need
 to be useful. `--cameras` takes the same YAML-ish dict-of-dataclass syntax as
@@ -133,7 +137,20 @@ def main():
 
     parser.add_argument("--repo_id", required=True, help="e.g. <hf_username>/<dataset_name>")
     parser.add_argument("--root", default=None, help="Local dataset directory (defaults to HF cache)")
-    parser.add_argument("--num_episodes", type=int, default=10)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Append new episodes to an existing dataset at --root instead of creating a new "
+            "one. --resume requires --root (LeRobotDataset.resume() refuses to write into the "
+            "Hub snapshot cache used when --root is omitted). The feature schema (including "
+            "whether force/cameras were recorded) is loaded from the existing dataset, so "
+            "--cameras should match what was used originally."
+        ),
+    )
+    parser.add_argument(
+        "--num_episodes", type=int, default=10, help="Number of NEW episodes to record this run"
+    )
     parser.add_argument("--episode_duration_s", type=float, default=30.0)
     parser.add_argument("--single_task", required=True, help="Short description of the demonstrated task")
     parser.add_argument(
@@ -173,19 +190,29 @@ def main():
     estimator = OnlineExternalTorqueEstimator(args.checkpoint)
 
     use_videos = not args.no_video
-    dataset_features = build_dataset_features(follower, use_videos)
     num_cameras = len(follower.cameras) if hasattr(follower, "cameras") else 0
-    dataset = LeRobotDataset.create(
-        args.repo_id,
-        args.fps,
-        root=args.root,
-        robot_type=follower.name,
-        features=dataset_features,
-        use_videos=use_videos,
-        image_writer_processes=0,
-        image_writer_threads=4 * num_cameras if num_cameras > 0 else 0,
-    )
+    if args.resume:
+        dataset = LeRobotDataset.resume(
+            args.repo_id,
+            root=args.root,
+            image_writer_processes=0,
+            image_writer_threads=4 * num_cameras if num_cameras > 0 else 0,
+        )
+        logger.info(f"Resuming {args.repo_id} at {dataset.num_episodes} existing episode(s).")
+    else:
+        dataset_features = build_dataset_features(follower, use_videos)
+        dataset = LeRobotDataset.create(
+            args.repo_id,
+            args.fps,
+            root=args.root,
+            robot_type=follower.name,
+            features=dataset_features,
+            use_videos=use_videos,
+            image_writer_processes=0,
+            image_writer_threads=4 * num_cameras if num_cameras > 0 else 0,
+        )
     logger.info(f"observation.state: {dataset.features['observation.state']}")
+    starting_episode_count = dataset.num_episodes
 
     dt = 1.0 / args.hz
     zero_tau_ext = dict.fromkeys(ARM_JOINTS, 0.0)
@@ -198,7 +225,10 @@ def main():
         )
         with VideoEncodingManager(dataset):
             for episode_idx in range(args.num_episodes):
-                print(f"=== Episode {episode_idx + 1}/{args.num_episodes} ===")
+                total_episode_num = starting_episode_count + episode_idx + 1
+                print(
+                    f"=== Episode {episode_idx + 1}/{args.num_episodes} this session (#{total_episode_num} in dataset) ==="
+                )
                 episode_end = time.perf_counter() + args.episode_duration_s
                 frames_this_episode = 0
                 try:
@@ -261,13 +291,13 @@ def main():
                 except KeyboardInterrupt:
                     if frames_this_episode > 0:
                         dataset.save_episode()
-                        print(f"\nStopped early; saved partial episode {episode_idx + 1}.")
+                        print(f"\nStopped early; saved partial episode #{total_episode_num}.")
                     else:
-                        print(f"\nStopped early before episode {episode_idx + 1} captured any frames.")
+                        print(f"\nStopped early before episode #{total_episode_num} captured any frames.")
                     raise
 
                 dataset.save_episode()
-                print(f"Episode {episode_idx + 1} saved.")
+                print(f"Episode #{total_episode_num} saved.")
     except KeyboardInterrupt:
         pass
     finally:
