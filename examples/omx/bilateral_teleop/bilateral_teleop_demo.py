@@ -96,6 +96,15 @@ def main():
     parser.add_argument("--leader_id", default="omx_leader")
     parser.add_argument("--urdf_path", required=True, help="Path to a local copy of omx_l.urdf")
     parser.add_argument("--checkpoint", required=True, help="Path to a NEXT checkpoint from train_next.py")
+    parser.add_argument(
+        "--force_smoothing_alpha",
+        type=float,
+        default=None,
+        help=(
+            "Optional EMA smoothing on tau_ext (0 < alpha <= 1, lower = smoother/laggier). "
+            "Disabled (raw tau_ext) by default."
+        ),
+    )
     add_leader_control_args(parser)
     parser.add_argument("--current_limit_ma", type=int, default=500, help="Hard per-joint current cap")
     parser.add_argument(
@@ -118,7 +127,16 @@ def main():
     leader.connect(calibrate=True)
 
     gravity_model = OmxGravityModel(args.urdf_path)
-    estimator = OnlineExternalTorqueEstimator(args.checkpoint)
+    estimator = OnlineExternalTorqueEstimator(args.checkpoint, smoothing_alpha=args.force_smoothing_alpha)
+    if abs(estimator.resample_hz - args.hz) > 0.2 * estimator.resample_hz:
+        logger.warning(
+            f"Checkpoint was trained at resample_hz={estimator.resample_hz:.1f}, but this loop "
+            f"targets --hz={args.hz:.1f} (and the achieved rate, printed below once running, is "
+            "typically lower still). A large train/inference rate mismatch stretches the "
+            "history_length window in wall-clock time and can hurt tau_ext's signal-to-noise "
+            "ratio -- consider retraining with train_next.py --resample-hz matched to the "
+            "achieved rate (see src/lerobot/force_estimation/README.md)."
+        )
 
     dt = 1.0 / args.hz
     zero_tau_ext = dict.fromkeys(ARM_JOINTS, 0.0)

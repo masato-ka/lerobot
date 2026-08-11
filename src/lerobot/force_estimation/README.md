@@ -25,6 +25,10 @@ wrist_roll`)。グリッパは Current-based Position 制御で独自の把持�
 
    (検証用)                    examples/omx/force_sensing/evaluate_free_motion.py
    (収集済みログをそのまま推論に流し、接触なし区間で τ_ext ≈ 0 になるか確認)
+
+   (検証用)                    examples/omx/force_sensing/evaluate_dataset_force.py
+   (record_bilateral.py で記録済みのデータセットから force.* の分布を集計し、
+    上記のノイズフロアと比較する)
 ```
 
 コアの再利用可能ロジック (`NextTorqueEstimator`, `NextWindowDataset`, `train_next`,
@@ -54,6 +58,10 @@ uv run python -m examples.omx.force_sensing.demo_force_sensing \
 uv run python -m examples.omx.force_sensing.evaluate_free_motion \
     --checkpoint checkpoints/omx_next.pt \
     --data data/omx_free_motion/run1.npz data/omx_free_motion/run2.npz
+
+# (検証用) record_bilateral.py で記録済みのデータセットの force.* 分布を集計
+uv run python -m examples.omx.force_sensing.evaluate_dataset_force \
+    --repo_id <hf_username>/omx_bilateral_force --root data/omx_bilateral_force
 ```
 
 ## 既知の制約・注意点
@@ -92,6 +100,40 @@ uv run python -m examples.omx.force_sensing.evaluate_free_motion \
 - **`τ_ext` はどちらも生レジスタ単位の相対量です。** 関節間の大小比較や、同一関節内での経時変化の
   比較には使えますが、関節をまたいだ絶対的な力の大きさの比較 (Nm換算なしでの比較) には
   注意してください。
+
+## チューニング: ノイズと接触時の差が小さいとき
+
+`demo_force_sensing.py`/バイラテラル制御でのフォースフィードバックは動くものの、
+`evaluate_free_motion.py` のノイズフロアと実際に接触した際の `τ_ext` の差が小さいと感じる場合、
+以下を疑ってください (可能性が高い順)。
+
+1. **学習時と推論時のサンプリングレート不一致。** `train_next.py` は既定で `--resample-hz 100.0`
+   (=`history_length=50` が学習時は約0.5秒分の履歴) を前提にしていますが、実際の制御ループ
+   (`bilateral_teleop_demo.py`/`record_bilateral.py`) はシリアル通信の直列実行 (複数バスへの
+   `sync_read`/`sync_write` を毎ステップ何度も発行) のため、実測レートが100Hzを大きく下回ることが
+   あります (起動時ログや、`bilateral_teleop_demo.py` が毎秒表示する実測Hzで確認できます)。この場合
+   推論時の履歴ウィンドウが学習時より長い実時間 (例: 48Hzなら約1.04秒) をカバーしてしまい、
+   学習時の分布とずれます。**対処**: 既存の `.npz` 自由運動ログに対して、実測レートに合わせた
+   `--resample-hz` で再学習するだけで直せます (新規データ収集は不要)。
+   ```bash
+   uv run python -m examples.omx.force_sensing.train_next \
+       --data data/omx_free_motion/run1.npz data/omx_free_motion/run2.npz \
+       --output checkpoints/omx_next_48hz.pt --resample-hz 48.0
+   ```
+   `bilateral_teleop_demo.py`/`record_bilateral.py` は起動時に `checkpoint` の `resample_hz` と
+   `--hz` が20%以上ずれていると警告を出すので、目安として活用してください (実測レートは
+   `--hz` 未満になりがちな点に注意)。
+2. **チューニング効果を数値で確認する。** `evaluate_dataset_force.py` (上記) を使い、
+   `record_bilateral.py` で録ったデータセットの `force.*` の分布 (全体・エピソードごとの
+   `max|.|` など) を、`evaluate_free_motion.py` で見たノイズフロアと並べて比較してください。
+   再学習やチューニングの前後でこの数値を比較することで、体感だけに頼らず効果を判断できます。
+3. **推定出力の平滑化 (オプション)。** `OnlineExternalTorqueEstimator(checkpoint,
+   smoothing_alpha=0.3)` のように渡す (または `bilateral_teleop_demo.py`/`record_bilateral.py`
+   の `--force_smoothing_alpha 0.3`) と、関節ごとにEMA (`smoothed = alpha*raw +
+   (1-alpha)*smoothed_prev`) がかかりノイズが減ります。既定は `None` (無効、生の `τ_ext` を返す)
+   なので既存の挙動は変わりません。ただし値を小さくしすぎると接触の立ち上がりが鈍るため、
+   再学習だけで十分な場合はこの段は不要です。効果は同じく `evaluate_dataset_force.py` で確認して
+   ください。
 
 ## 検証方法
 
