@@ -32,6 +32,17 @@ from lerobot.force_estimation import (
 logger = logging.getLogger(__name__)
 
 
+def side_stats(col: np.ndarray) -> tuple[int, float, float, float]:
+    """`(n, mean, std, max)` of `col`'s magnitude, restricted to values with `col`'s sign
+    (i.e. call with `col` and with `-col` to get the +side/-side breakdown separately). `n=0`
+    stats are `0.0` rather than `nan` so the table stays printable when one side is empty.
+    """
+    side = col[col > 0]
+    if len(side) == 0:
+        return 0, 0.0, 0.0, 0.0
+    return len(side), float(side.mean()), float(side.std()), float(side.max())
+
+
 def evaluate_episode(estimator: OnlineExternalTorqueEstimator, episode: FreeMotionEpisode) -> np.ndarray:
     """Replay one resampled episode through `estimator`, step by step.
 
@@ -79,6 +90,21 @@ def main():
     for i, joint in enumerate(estimator.joint_names):
         col = tau_ext[:, i]
         print(f"{joint:<15}{col.mean():>10.2f}{col.std():>10.2f}{np.abs(col).max():>10.2f}")
+
+    print(
+        "\n+side / -side breakdown (asymmetry check -- if this noise floor is already "
+        "lopsided, the same asymmetry seen on contact data is a free-space/hardware artifact,\n"
+        "not a real per-direction difference in sensed contact force):"
+    )
+    print(f"{'joint':<15}{'n+':>6}{'mean+':>9}{'std+':>9}{'max+':>9}   {'n-':>6}{'mean-':>9}{'std-':>9}{'max-':>9}")
+    for i, joint in enumerate(estimator.joint_names):
+        col = tau_ext[:, i]
+        n_pos, mean_pos, std_pos, max_pos = side_stats(col)
+        n_neg, mean_neg, std_neg, max_neg = side_stats(-col)
+        print(
+            f"{joint:<15}{n_pos:>6}{mean_pos:>9.2f}{std_pos:>9.2f}{max_pos:>9.2f}   "
+            f"{n_neg:>6}{mean_neg:>9.2f}{std_neg:>9.2f}{max_neg:>9.2f}"
+        )
 
 
 if __name__ == "__main__":

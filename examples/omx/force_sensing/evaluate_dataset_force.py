@@ -40,6 +40,17 @@ def force_column_indices(state_names: list[str]) -> tuple[list[int], list[str]]:
     return indices, joints
 
 
+def side_stats(col: np.ndarray) -> tuple[int, float, float, float]:
+    """`(n, mean, std, max)` of `col`'s magnitude, restricted to values with `col`'s sign
+    (i.e. call with `col` and with `-col` to get the +side/-side breakdown separately). `n=0`
+    stats are `0.0` rather than `nan` so the table stays printable when one side is empty.
+    """
+    side = col[col > 0]
+    if len(side) == 0:
+        return 0, 0.0, 0.0, 0.0
+    return len(side), float(side.mean()), float(side.std()), float(side.max())
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -79,6 +90,22 @@ def main():
             f"{joint:<15}{col.mean():>10.2f}{col.std():>10.2f}{col.min():>10.2f}"
             f"{np.percentile(col, 5):>10.2f}{np.percentile(col, 50):>10.2f}"
             f"{np.percentile(col, 95):>10.2f}{col.max():>10.2f}"
+        )
+
+    print(
+        "\n+side / -side breakdown (compare against evaluate_free_motion.py's own +/- "
+        "breakdown on contact-free data -- if the noise floor is already lopsided the same "
+        "way, this is a free-space/hardware artifact, not a real per-direction contact "
+        "difference):"
+    )
+    print(f"{'joint':<15}{'n+':>6}{'mean+':>9}{'std+':>9}{'max+':>9}   {'n-':>6}{'mean-':>9}{'std-':>9}{'max-':>9}")
+    for j, joint in enumerate(joints):
+        col = force[:, j]
+        n_pos, mean_pos, std_pos, max_pos = side_stats(col)
+        n_neg, mean_neg, std_neg, max_neg = side_stats(-col)
+        print(
+            f"{joint:<15}{n_pos:>6}{mean_pos:>9.2f}{std_pos:>9.2f}{max_pos:>9.2f}   "
+            f"{n_neg:>6}{mean_neg:>9.2f}{std_neg:>9.2f}{max_neg:>9.2f}"
         )
 
     episode_ids = sorted(set(episode_index.tolist()))
