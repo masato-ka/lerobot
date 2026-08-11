@@ -31,8 +31,6 @@ Usage (run from repo root):
     python -m examples.omx.bilateral_teleop.record_bilateral \\
         --follower_port /dev/ttyACM0 --leader_port /dev/ttyACM1 \\
         --urdf_path /path/to/omx_l.urdf --checkpoint checkpoints/omx_next.pt \\
-        --modifier 0.09 --modifier_shoulder_lift 0.15 \\
-        --damping_gain 0.15 --joint_limit_kp 3 --joint_limit_kd 0 --feedback_gain -0.3 \\
         --repo_id <hf_username>/omx_bilateral_force --root data/omx_bilateral_force \\
         --num_episodes 10 --episode_duration_s 30 --single_task "Pick up the cube" \\
         --cameras="{ wrist: {type: opencv, index_or_path: 6, width: 640, height: 480, fps: 30, fourcc: MJPG}, top: {type: opencv, index_or_path: 4, width: 640, height: 480, fps: 30, fourcc: MJPG} }" \\
