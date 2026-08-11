@@ -43,6 +43,14 @@ class OnlineExternalTorqueEstimator:
             Path to a checkpoint produced by [`~force_estimation.train_next`].
         device (`str`, *optional*):
             Torch device to run inference on. Defaults to CUDA if available, else CPU.
+        smoothing_alpha (`float`, *optional*):
+            If set, apply an exponential moving average to the returned `tau_ext` with this
+            weight on the newest raw estimate (`smoothed = alpha * raw + (1 - alpha) *
+            smoothed_prev`), per joint. `None` (the default) returns the raw estimate exactly as
+            before -- existing callers are unaffected unless they opt in. Lower values reduce
+            noise at the cost of lagging behind fast contact transients; tune empirically (e.g.
+            starting around `0.3`) and compare with
+            `examples/omx/force_sensing/evaluate_dataset_force.py`.
 
     **Attributes**:
         - **joint_names** (`list[str]`) -- Joint names, in the order expected by `update`'s dict
@@ -53,7 +61,12 @@ class OnlineExternalTorqueEstimator:
           evaluation should resample to this same rate first.
     """
 
-    def __init__(self, checkpoint_path: str | Path, device: str | None = None):
+    def __init__(
+        self,
+        checkpoint_path: str | Path,
+        device: str | None = None,
+        smoothing_alpha: float | None = None,
+    ):
         """Load the checkpoint and build the model; see the class docstring for the parameters."""
         # weights_only=True: the checkpoint only contains tensors, the model's own state_dict,
         # and plain str/int/float metadata (see train.train_next) -- no arbitrary objects.
@@ -82,9 +95,13 @@ class OnlineExternalTorqueEstimator:
 
         self._history: deque[np.ndarray] = deque(maxlen=self.history_length)
 
+        self.smoothing_alpha = smoothing_alpha
+        self._smoothed: dict[str, float] | None = None
+
     def reset(self) -> None:
         """Clear the rolling history buffer (e.g. after a discontinuous jump in commanded pose)."""
         self._history.clear()
+        self._smoothed = None
 
     @torch.no_grad()
     def update(
@@ -110,7 +127,8 @@ class OnlineExternalTorqueEstimator:
         Returns:
             `dict[str, float] | None`: Estimated external torque per joint (same raw-proxy
             units as `current`), or `None` if the history buffer has not yet filled (first
-            `history_length` calls).
+            `history_length` calls). Smoothed per `smoothing_alpha` if it was set at
+            construction time.
         """
         feat = np.concatenate(
             [
@@ -132,4 +150,15 @@ class OnlineExternalTorqueEstimator:
             [current[j] for j in self.joint_names], device=self.device, dtype=torch.float32
         )
         tau_ext = current_arr - pred_free_space
-        return {joint: float(tau_ext[i]) for i, joint in enumerate(self.joint_names)}
+        raw = {joint: float(tau_ext[i]) for i, joint in enumerate(self.joint_names)}
+        if self.smoothing_alpha is None:
+            return raw
+
+        if self._smoothed is None:
+            self._smoothed = raw
+        else:
+            alpha = self.smoothing_alpha
+            self._smoothed = {
+                joint: alpha * raw[joint] + (1 - alpha) * self._smoothed[joint] for joint in self.joint_names
+            }
+        return self._smoothed
