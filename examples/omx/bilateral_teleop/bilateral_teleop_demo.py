@@ -13,23 +13,24 @@ single combined loop:
      independently of the overall `--current_limit_ma`.
   5. Sum all leader torque terms, convert/clip to mA, write `Goal_Current`.
 
-`--feedback_gain` defaults to `-0.2` (see below for why it's negative) -- this is a confirmed
-working value on one unit, not a "disabled by default" safety fallback like the other gains
-here. Pass `--feedback_gain 0.0` explicitly if you want the pre-feedback, `gravity_comp_demo.py`-
-equivalent behavior (e.g. to isolate a regression) instead of the tuned default.
+`--feedback_gain` defaults to `0.0`: with no other flags, this script behaves exactly like
+`gravity_comp_demo.py` plus a plain position teleop to the follower -- a safe way to confirm
+the combined loop works before turning on real force feedback (see gravity_comp_demo.py's
+SAFETY notes, which all still apply here).
 
 `tau_ext` uses the follower's raw per-joint sensing units (see
 src/lerobot/force_estimation/README.md), not Nm, and its sign relative to "which direction the
 leader should push back" is unverified in general -- `feedback_gain` is deliberately allowed to
 be negative so a backwards joint can just have its sign flipped during tuning. Confirmed on
 hardware: `tau_ext`'s sign is opposite the intuitive "push back the same way" direction, so a
-*negative* `--feedback_gain` is what actually renders correctly here -- both leader and
-follower have every arm joint's `Drive_Mode` set the same way (`NON_INVERTED`), so this flip is
-expected to be uniform across joints rather than needing a different sign per joint, but verify
-per joint if some feel backwards after the global flip.
+*negative* `--feedback_gain` (e.g. `-0.2`) is what actually renders correctly here -- both
+leader and follower have every arm joint's `Drive_Mode` set the same way (`NON_INVERTED`), so
+this flip is expected to be uniform across joints rather than needing a different sign per
+joint, but verify per joint if some feel backwards after the global flip.
 
 Usage (run from repo root; showing the confirmed defaults explicitly -- they apply even if
-omitted):
+omitted, except --feedback_gain which stays off by default -- pass it explicitly to enable
+feedback):
     python -m examples.omx.bilateral_teleop.bilateral_teleop_demo \\
         --follower_port /dev/ttyACM0 --follower_id omx_follower \\
         --leader_port /dev/ttyACM1 --leader_id omx_leader \\
@@ -72,7 +73,9 @@ def add_leader_control_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--joint_limit_kd", type=float, default=0.0, help="Default joint-limit barrier D gain"
     )
-    parser.add_argument("--feedback_gain", type=float, default=-0.2, help="Default force-feedback gain")
+    parser.add_argument(
+        "--feedback_gain", type=float, default=0.0, help="Default force-feedback gain (0.0 = disabled)"
+    )
     for prefix in ("modifier", "damping_gain", "joint_limit_kp", "joint_limit_kd", "feedback_gain"):
         for joint in ARM_JOINTS:
             parser.add_argument(
