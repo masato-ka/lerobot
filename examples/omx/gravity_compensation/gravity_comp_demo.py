@@ -19,18 +19,17 @@ SAFETY -- read before running:
   2. `JOINT_LIMIT_RANGE` below was measured with `find_leader_joint_range.py` on one specific
      leader unit. If you're running a different physical arm, re-measure and replace it before
      relying on the barrier for real protection.
-  3. Support the arm by hand before starting. `--modifier` defaults to a conservative 0.09
-     (per-joint requirements vary a lot -- e.g. shoulder_lift typically needs noticeably more
-     than the rest, wrist_roll needs close to none); increase gradually while feeling whether
-     the arm gets lighter, rather than jumping to a large value. Same approach for
-     `--damping_gain`/`--joint_limit_kp`/`--joint_limit_kd`: all default small, tune upward.
-     Note that `--damping_gain` applies across the *entire* range (not just near the joint
-     limits), so a value that's too high makes manual operation feel uniformly heavy rather
-     than just damping motion near the limits -- if that happens, turn it down before touching
-     the joint-limit gains. The joint-limit barrier itself can ring/oscillate right at the
-     wall if `--joint_limit_kp` is too high for this loop's rate + Dynamixel bus latency;
-     lower `kp` first, and only add `--joint_limit_kd` back in if the wall still feels too
-     bouncy once `kp` is reasonable.
+  3. Support the arm by hand before starting. The defaults below (`--modifier 0.09`,
+     `--modifier_shoulder_lift 0.1`, `--modifier_shoulder_pan 0.0`, `--modifier_wrist_roll 0.0`,
+     `--damping_gain 0.05`, `--joint_limit_kp 3`, `--joint_limit_kd 0`) are confirmed comfortable
+     on one unit, but re-verify on a new arm: increase gradually while feeling whether the arm
+     gets lighter, rather than trusting them blind. Note that `--damping_gain` applies across
+     the *entire* range (not just near the joint limits), so a value that's too high makes
+     manual operation feel uniformly heavy rather than just damping motion near the limits --
+     if that happens, turn it down before touching the joint-limit gains. The joint-limit
+     barrier itself can ring/oscillate right at the wall if `--joint_limit_kp` is too high for
+     this loop's rate + Dynamixel bus latency; lower `kp` first, and only add `--joint_limit_kd`
+     back in if the wall still feels too bouncy once `kp` is reasonable.
   4. `--current_limit_ma` is a hard per-joint ceiling independent of all the gains above, in
      case a gain/sign mapping is wrong. Keep it conservative until you've validated behavior.
   5. Ctrl+C (or any exception) always disables torque and restores the arm to
@@ -38,18 +37,20 @@ SAFETY -- read before running:
 
 Per-joint tuning: every gain (`--modifier`, `--damping_gain`, `--joint_limit_kp`,
 `--joint_limit_kd`) has a `--<name>_<joint>` override (e.g. `--modifier_shoulder_lift 0.15`)
-that falls back to the global `--<name>` value when not given. `wrist_roll`'s `--modifier`
-defaults to `0.0` (its gravity torque is close to zero at every pose, and any nonzero current
-there tends to just get in the way of manual operation) -- pass `--modifier_wrist_roll`
-explicitly if you want it compensated too.
+that falls back to the global `--<name>` value when not given. `shoulder_pan` and `wrist_roll`
+default their `--modifier` to `0.0` (their gravity torque is close to zero at every pose, and
+any nonzero current there tends to just get in the way of manual operation); `shoulder_lift`
+defaults to `0.1`, above the `0.09` global default, since it carries the most load and can fall
+in some poses at the global value alone.
 
-Usage (run from repo root; defaults below are the values confirmed comfortable -- oscillation-
-free at the joint limits, no perceptible extra weight during normal operation -- on one unit):
+Usage (run from repo root; showing the confirmed defaults explicitly -- they apply even if
+omitted):
     python -m examples.omx.gravity_compensation.gravity_comp_demo \\
         --port /dev/ttyACM1 --robot_id omx_leader \\
         --urdf_path /path/to/omx_l.urdf \\
-        --modifier 0.09 --modifier_shoulder_lift 0.15 \\
-        --damping_gain 0.15 --joint_limit_kp 3 --joint_limit_kd 0
+        --modifier 0.09 --modifier_shoulder_lift 0.1 \\
+        --modifier_shoulder_pan 0.0 --modifier_wrist_roll 0.0 \\
+        --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0
 """
 
 import argparse
@@ -80,7 +81,7 @@ def main():
     parser.add_argument("--robot_id", default="omx_leader")
     parser.add_argument("--urdf_path", required=True, help="Path to a local copy of omx_l.urdf")
     parser.add_argument("--modifier", type=float, default=0.09, help="Default gravity-comp gain")
-    parser.add_argument("--damping_gain", type=float, default=0.15, help="Default velocity damping gain")
+    parser.add_argument("--damping_gain", type=float, default=0.05, help="Default velocity damping gain")
     parser.add_argument(
         "--joint_limit_kp", type=float, default=3.0, help="Default joint-limit barrier P gain"
     )

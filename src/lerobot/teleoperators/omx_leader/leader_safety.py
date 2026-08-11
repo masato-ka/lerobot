@@ -44,10 +44,16 @@ from .omx_leader import OmxLeader
 # pragmatic "empirical gain, not physically exact" approach used throughout this arm's tuning.
 KT_NM_PER_A = 0.36
 
-# wrist_roll's gravity torque is close to zero at essentially every pose (see
-# OmxGravityModel docstring/README), and applying any noticeable current there mostly just
-# resists manual operation -- so it defaults to uncompensated unless explicitly overridden.
-DEFAULT_JOINT_MODIFIER_OVERRIDES: dict[str, float] = {"wrist_roll": 0.0}
+# Per-joint gravity-comp defaults confirmed on hardware: wrist_roll's gravity torque is close
+# to zero at essentially every pose (see OmxGravityModel docstring/README) and applying any
+# noticeable current there mostly just resists manual operation, so it stays uncompensated.
+# shoulder_pan needs none either. shoulder_lift carries the most load and needs more than the
+# --modifier default to avoid falling in some poses.
+DEFAULT_JOINT_MODIFIER_OVERRIDES: dict[str, float] = {
+    "shoulder_pan": 0.0,
+    "shoulder_lift": 0.1,
+    "wrist_roll": 0.0,
+}
 
 # Safe range (normalized position units, per joint), measured on one leader unit with
 # find_leader_joint_range.py. wrist_roll is a continuous-rotation joint (no meaningful
