@@ -54,6 +54,14 @@ gravity-comp/damping/feedback math at all) while running the same gripper relay,
 whether merely being in Current Control Mode -- independent of any actual computed force -- is
 what changes the gripper's felt behavior.
 
+UPDATE 3: `--with_arm_current_control` (0mA) *did* reproduce the closing-bias symptom, weaker
+than during real bilateral operation (which commands much larger gravity-comp currents). That
+dose-response (more arm current -> stronger gripper effect) points at a shared-bus voltage-sag
+mechanism: the arm's current draw sags the bus enough to starve the gripper's own low
+`Current_Limit` (100mA). `--arm_current_ma` lets this be tested directly and quantitatively --
+ramp it up and watch `Present_Input_Voltage` (now printed for the leader's gripper and
+`shoulder_pan`) dip alongside the gripper's behavior degrading.
+
 Usage (run from repo root):
     python -m examples.omx.diagnose_gripper \\
         --follower_port /dev/ttyACM0 --follower_id omx_follower \\
@@ -67,6 +75,11 @@ Usage (run from repo root):
     # comp/damping/feedback) to isolate whether the mode switch itself affects the gripper:
     python -m examples.omx.diagnose_gripper \\
         --follower_port /dev/ttyACM0 --leader_port /dev/ttyACM1 --live_relay --with_arm_current_control
+
+    # Ramp the arm's current draw and watch Present_Input_Voltage / gripper behavior together:
+    python -m examples.omx.diagnose_gripper \\
+        --follower_port /dev/ttyACM0 --leader_port /dev/ttyACM1 \\
+        --live_relay --with_arm_current_control --arm_current_ma 300
 
 Run once right after reproducing the "gripper always pulls closed" symptom, and once right after
 running stock `lerobot-teleop` and confirming it behaves correctly -- ideally without
@@ -146,7 +159,9 @@ def stream_gripper_position(label: str, robot, hz: float) -> None:
         print()
 
 
-def live_gripper_relay(follower, leader, hz: float, with_arm_current_control: bool) -> None:
+def live_gripper_relay(
+    follower, leader, hz: float, with_arm_current_control: bool, arm_current_ma: int
+) -> None:
     """Reproduce *only* bilateral_teleop_demo.py's/record_bilateral.py's gripper relay line
     (no gravity-comp/damping/feedback math) and print leader target vs. follower actual
     position + current live, each tick. Squeeze/release the leader gripper by hand and watch
@@ -154,31 +169,45 @@ def live_gripper_relay(follower, leader, hz: float, with_arm_current_control: bo
     also do.
 
     If `with_arm_current_control` is set, the leader's `ARM_JOINTS` are additionally switched to
-    Current Control Mode and written 0mA every tick (the mode switch itself, no actual force
-    computation) -- to test whether merely being in Current Control Mode changes the gripper's
-    behavior, independent of any real gravity-comp/damping/feedback torque.
+    Current Control Mode and written `arm_current_ma` every tick (the mode switch itself plus a
+    controllable, uniform current draw -- no gravity-comp/damping/feedback math) -- to test
+    whether merely being in Current Control Mode, and how much current the arm actually draws,
+    changes the gripper's behavior. Also prints `Present_Input_Voltage` for the leader's gripper
+    and its `shoulder_pan` joint each tick: a real symptom found earlier (the gripper's closing
+    bias appearing even at 0mA, but getting *stronger* at the higher currents real gravity comp
+    draws) is consistent with the arm's current draw sagging the shared bus voltage enough to
+    starve the gripper's own low `Current_Limit` (100mA) trigger control -- if that's the cause,
+    voltage here should visibly dip as `arm_current_ma` increases.
     """
     print(
         "\n--- Live gripper relay: leader Present_Position -> follower Goal_Position, same as "
         "the bilateral scripts, nothing else"
-        + (" (+ leader ARM_JOINTS in Current Control Mode, 0mA)" if with_arm_current_control else "")
+        + (
+            f" (+ leader ARM_JOINTS in Current Control Mode, {arm_current_ma}mA each)"
+            if with_arm_current_control
+            else ""
+        )
         + ". Squeeze/release the leader gripper by hand. Ctrl+C to stop. ---\n"
     )
     if with_arm_current_control:
-        enter_current_control_mode(leader, current_limit_ma=500)
-        zero_current = dict.fromkeys(ARM_JOINTS, 0)
+        enter_current_control_mode(leader, current_limit_ma=max(500, arm_current_ma))
+        arm_current = dict.fromkeys(ARM_JOINTS, arm_current_ma)
     dt = 1.0 / hz
     try:
         while True:
             leader_pos = leader.bus.sync_read("Present_Position")
             if with_arm_current_control:
-                leader.bus.sync_write("Goal_Current", zero_current)
+                leader.bus.sync_write("Goal_Current", arm_current)
             follower.send_action({"gripper.pos": leader_pos["gripper"]})
             follower_now = follower.bus.read("Present_Position", "gripper", normalize=True)
             follower_current = follower.bus.read("Present_Current", "gripper", normalize=False)
+            gripper_voltage = leader.bus.read("Present_Input_Voltage", "gripper", normalize=False)
+            arm_voltage = leader.bus.read("Present_Input_Voltage", "shoulder_pan", normalize=False)
             print(
                 f"\rleader_target={leader_pos['gripper']:6.1f}  "
-                f"follower_actual={follower_now:6.1f}  follower_current={follower_current:5d}",
+                f"follower_actual={follower_now:6.1f}  follower_current={follower_current:5d}  "
+                f"leader_gripper_voltage={gripper_voltage / 10:4.1f}V  "
+                f"leader_shoulder_pan_voltage={arm_voltage / 10:4.1f}V",
                 end="",
                 flush=True,
             )
@@ -209,8 +238,16 @@ def main():
     parser.add_argument(
         "--with_arm_current_control",
         action="store_true",
-        help="With --live_relay, also switch the leader's ARM_JOINTS to Current Control Mode (0mA) "
-        "to isolate whether the mode switch itself affects the gripper",
+        help="With --live_relay, also switch the leader's ARM_JOINTS to Current Control Mode "
+        "to isolate whether the mode switch / current draw itself affects the gripper",
+    )
+    parser.add_argument(
+        "--arm_current_ma",
+        type=int,
+        default=0,
+        help="Current written to each ARM_JOINT every tick with --with_arm_current_control. Try "
+        "ramping this up (e.g. 0, 100, 300) to see if the gripper's closing bias and "
+        "Present_Input_Voltage scale with it (shared-bus voltage sag hypothesis)",
     )
     args = parser.parse_args()
 
@@ -235,7 +272,9 @@ def main():
             print_static_diagnostics("Leader", leader)
 
         if args.live_relay:
-            live_gripper_relay(follower, leader, args.hz, args.with_arm_current_control)
+            live_gripper_relay(
+                follower, leader, args.hz, args.with_arm_current_control, args.arm_current_ma
+            )
         else:
             print(
                 "\nStatic diagnostics done. Next: manually move each connected gripper by hand to "
