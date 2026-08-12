@@ -27,6 +27,15 @@ to be useful. `--cameras` takes the same YAML-ish dict-of-dataclass syntax as
 CameraConfig], ...)` so any registered camera backend (not just OpenCV) works, e.g.:
     --cameras="{ wrist: {type: opencv, index_or_path: 6, width: 640, height: 480, fps: 30, fourcc: MJPG} }"
 
+KNOWN LIMITATION -- follower position offset at full extension: recorded `observation.state`
+positions/actions can be off by up to ~1-2cm (follower higher than intended) when the leader is
+reached far forward (e.g. `shoulder_pan > 0` with `shoulder_lift`/`elbow_flex < 0`) -- negligible
+close to the base. Root-caused (`examples/omx/diagnose_pose.py`) to residual gravity-compensation
+error in the leader, not a follower-tracking bug; see
+`src/lerobot/teleoperators/omx_leader/gravity_compensation.py`'s module docstring for the full
+writeup. Accepted as a known limitation -- if precise end-effector placement matters for a given
+demonstration task, prefer poses that don't require reaching to full extension.
+
 Usage (run from repo root):
     python -m examples.omx.bilateral_teleop.record_bilateral \\
         --follower_port /dev/ttyACM0 --leader_port /dev/ttyACM1 \\
