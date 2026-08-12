@@ -61,18 +61,18 @@ voltage-sag/dose-response theory (a real supply-voltage sag would scale with cur
 identically at 0mA). `Present_Input_Voltage` monitoring is kept since it's still useful to rule
 in/out voltage as a factor case by case.
 
-UPDATE 4: two more data points nail down the mechanism. (a) `--gripper_current_limit_ma 0` with
-*no* `--with_arm_current_control` at all -- i.e. the gripper simply has zero torque the whole
-time -- makes it fall closed on its own. So the gripper mechanism has a genuine mechanical bias
-toward closed when unpowered (spring/gravity/detent -- not a bug, just how the hardware is
-built). (b) Under `--with_arm_current_control`, *raising* `--gripper_current_limit_ma` makes it
-*harder* to pry open, not easier. If the gripper's target were still correctly
-`gripper_open_pos` (60) and it just lacked torque to fight friction, more current should make it
-easier to reach/hold open -- instead more current means it fights *harder to stay closed*. That
-only makes sense if the gripper's actual `Goal_Position` itself has shifted toward the closed end
-once the arm enters Current Control Mode, not just "not enough torque."
+UPDATE 4: `--gripper_current_limit_ma 0` with *no* `--with_arm_current_control` appeared to make
+the gripper "fall closed" -- but this was misleading. The gripper has *no* mechanical bias:
+confirmed it's genuinely free/backdrivable at zero torque, not spring/gravity-loaded toward
+closed. What actually happened is that *this script's own* `--gripper_current_limit_ma` code path
+(below) briefly toggles the gripper's own `Torque_Enable` off/on to write the `Current_Limit`
+EEPROM register -- triggering the exact same firmware quirk described next, just from a different
+call site. Separately, under `--with_arm_current_control`, *raising* `--gripper_current_limit_ma`
+made it *harder* to pry open, not easier -- which only makes sense if the gripper's actual
+`Goal_Position` had shifted toward the closed end, not merely "not enough torque against
+friction" (more current against a correct, still-open target should help, not hurt).
 
-Putting (a) + (b) together with `enter_current_control_mode()`'s own code
+Root cause, found in `enter_current_control_mode()`'s own code
 (`src/lerobot/teleoperators/omx_leader/leader_safety.py`):
 ```
 def enter_current_control_mode(leader, current_limit_ma):
@@ -81,16 +81,20 @@ def enter_current_control_mode(leader, current_limit_ma):
             leader.bus.write("Operating_Mode", joint, OperatingMode.CURRENT.value)
             leader.bus.write("Current_Limit", joint, current_limit_ma)
 ```
-`torque_disabled()` with no `motors` argument affects every motor, so the gripper's torque is
-disabled too, even though nothing inside the `with` block ever needs to touch it. During that
-window the gripper (per (a)) falls toward its closed mechanical rest position, and
-`DynamixelMotorsBus.enable_torque()`/`disable_torque()` (`dynamixel.py:191-201`) were confirmed
-to only ever write `Torque_Enable` -- never `Goal_Position` -- so if the effective target really
-has shifted, it's Dynamixel firmware behavior on the Torque_Enable OFF->ON transition in
-`CURRENT_POSITION` mode, outside LeRobot's control -- but avoidable entirely by never disabling
-the gripper's torque in the first place. `--scope_arm_torque_disable` tests exactly that fix
-in isolation (bypassing the real `enter_current_control_mode`, using a copy scoped to
-`ARM_JOINTS` only) before touching the shared `leader_safety.py`.
+`torque_disabled()` with no `motors` argument affects every motor, so the gripper's
+`Torque_Enable` gets toggled off then back on too, even though nothing inside the `with` block
+ever needs to touch it. `DynamixelMotorsBus.enable_torque()`/`disable_torque()`
+(`dynamixel.py:191-201`) were confirmed to only ever write `Torque_Enable` -- never
+`Goal_Position` -- so the shifted target is Dynamixel firmware behavior on the Torque_Enable
+OFF->ON transition in `CURRENT_POSITION` mode (the servo appears to re-lock `Goal_Position` to
+wherever `Present_Position` was at that exact moment), outside LeRobot's control but avoidable
+entirely by never disabling the gripper's torque in the first place. `--scope_arm_torque_disable`
+tested exactly that fix in isolation (bypassing the real `enter_current_control_mode`, using a
+copy scoped to `ARM_JOINTS` only) before it was applied to the shared `leader_safety.py`.
+
+Note: `--gripper_current_limit_ma`'s own `torque_disabled(["gripper"])` (below) still has this
+same latent quirk -- using that flag can itself shift the gripper's effective target as a side
+effect. Harmless for the A/B tests this script was built for, but worth knowing if you reuse it.
 
 RESOLVED: `--scope_arm_torque_disable` confirmed on hardware -- both leader and follower gripper
 behaved correctly. The fix (`torque_disabled(ARM_JOINTS)` instead of unscoped
