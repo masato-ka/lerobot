@@ -54,13 +54,18 @@ gravity-comp/damping/feedback math at all) while running the same gripper relay,
 whether merely being in Current Control Mode -- independent of any actual computed force -- is
 what changes the gripper's felt behavior.
 
-UPDATE 3: `--with_arm_current_control` (0mA) *did* reproduce the closing-bias symptom, weaker
-than during real bilateral operation (which commands much larger gravity-comp currents). That
-dose-response (more arm current -> stronger gripper effect) points at a shared-bus voltage-sag
-mechanism: the arm's current draw sags the bus enough to starve the gripper's own low
-`Current_Limit` (100mA). `--arm_current_ma` lets this be tested directly and quantitatively --
-ramp it up and watch `Present_Input_Voltage` (now printed for the leader's gripper and
-`shoulder_pan`) dip alongside the gripper's behavior degrading.
+UPDATE 3: `--with_arm_current_control` reproduces the closing-bias symptom at `--arm_current_ma 0`
+just as strongly as at higher values -- it depends *only* on whether the arm joints are in
+Current Control Mode at all, not on how much current they actually draw. This rules out the
+voltage-sag/dose-response theory (a real supply-voltage sag would scale with current, not appear
+identically at 0mA). `Present_Input_Voltage` monitoring is kept since it's still useful to rule
+in/out voltage as a factor case by case, but the leading theory is now a bus/firmware-level
+effect of `Operating_Mode=CURRENT` being active on other motors sharing the bus (Dynamixel
+current-based modes actively regulate current even at a 0 target, which can behave differently
+electrically than a plain position-mode motor) -- not something a LeRobot-side code fix can
+address directly. `--gripper_current_limit_ma` (default 100, matching `OmxLeader.configure()`'s
+own value) lets you test whether simply giving the gripper's own trigger control more current
+headroom is enough to overpower whatever this effect is, as a practical mitigation.
 
 Usage (run from repo root):
     python -m examples.omx.diagnose_gripper \\
@@ -80,6 +85,11 @@ Usage (run from repo root):
     python -m examples.omx.diagnose_gripper \\
         --follower_port /dev/ttyACM0 --leader_port /dev/ttyACM1 \\
         --live_relay --with_arm_current_control --arm_current_ma 300
+
+    # Test whether more gripper current headroom overpowers the effect:
+    python -m examples.omx.diagnose_gripper \\
+        --follower_port /dev/ttyACM0 --leader_port /dev/ttyACM1 \\
+        --live_relay --with_arm_current_control --gripper_current_limit_ma 400
 
 Run once right after reproducing the "gripper always pulls closed" symptom, and once right after
 running stock `lerobot-teleop` and confirming it behaves correctly -- ideally without
@@ -160,7 +170,12 @@ def stream_gripper_position(label: str, robot, hz: float) -> None:
 
 
 def live_gripper_relay(
-    follower, leader, hz: float, with_arm_current_control: bool, arm_current_ma: int
+    follower,
+    leader,
+    hz: float,
+    with_arm_current_control: bool,
+    arm_current_ma: int,
+    gripper_current_limit_ma: int,
 ) -> None:
     """Reproduce *only* bilateral_teleop_demo.py's/record_bilateral.py's gripper relay line
     (no gravity-comp/damping/feedback math) and print leader target vs. follower actual
@@ -170,14 +185,14 @@ def live_gripper_relay(
 
     If `with_arm_current_control` is set, the leader's `ARM_JOINTS` are additionally switched to
     Current Control Mode and written `arm_current_ma` every tick (the mode switch itself plus a
-    controllable, uniform current draw -- no gravity-comp/damping/feedback math) -- to test
-    whether merely being in Current Control Mode, and how much current the arm actually draws,
-    changes the gripper's behavior. Also prints `Present_Input_Voltage` for the leader's gripper
-    and its `shoulder_pan` joint each tick: a real symptom found earlier (the gripper's closing
-    bias appearing even at 0mA, but getting *stronger* at the higher currents real gravity comp
-    draws) is consistent with the arm's current draw sagging the shared bus voltage enough to
-    starve the gripper's own low `Current_Limit` (100mA) trigger control -- if that's the cause,
-    voltage here should visibly dip as `arm_current_ma` increases.
+    controllable, uniform current draw -- no gravity-comp/damping/feedback math). Confirmed by
+    hand: the gripper's closing-bias symptom depends only on whether the arm is in Current
+    Control Mode at all, not on `arm_current_ma`'s value (identical at 0mA) -- so this isn't a
+    supply-voltage-sag effect, `Present_Input_Voltage` (leader gripper + `shoulder_pan`) is
+    printed mainly to keep ruling that in/out per setup. `gripper_current_limit_ma` overrides the
+    gripper's own `Current_Limit`/`Goal_Current` (`OmxLeader.configure()`'s default is 100) so you
+    can test whether simply giving the trigger more current headroom overpowers the effect --
+    a practical mitigation independent of fully explaining the mechanism.
     """
     print(
         "\n--- Live gripper relay: leader Present_Position -> follower Goal_Position, same as "
@@ -187,8 +202,18 @@ def live_gripper_relay(
             if with_arm_current_control
             else ""
         )
+        + (
+            f" (+ gripper Current_Limit/Goal_Current={gripper_current_limit_ma}mA)"
+            if gripper_current_limit_ma != 100
+            else ""
+        )
         + ". Squeeze/release the leader gripper by hand. Ctrl+C to stop. ---\n"
     )
+    if gripper_current_limit_ma != 100:
+        # Current_Limit is an EEPROM register; Dynamixel rejects EEPROM writes while torque is on.
+        with leader.bus.torque_disabled(["gripper"]):
+            leader.bus.write("Current_Limit", "gripper", gripper_current_limit_ma)
+        leader.bus.write("Goal_Current", "gripper", gripper_current_limit_ma)
     if with_arm_current_control:
         enter_current_control_mode(leader, current_limit_ma=max(500, arm_current_ma))
         arm_current = dict.fromkeys(ARM_JOINTS, arm_current_ma)
@@ -249,6 +274,14 @@ def main():
         "ramping this up (e.g. 0, 100, 300) to see if the gripper's closing bias and "
         "Present_Input_Voltage scale with it (shared-bus voltage sag hypothesis)",
     )
+    parser.add_argument(
+        "--gripper_current_limit_ma",
+        type=int,
+        default=100,
+        help="Override the leader gripper's Current_Limit/Goal_Current (default 100, matching "
+        "OmxLeader.configure()) to test whether more current headroom overpowers the "
+        "closing-bias effect while --with_arm_current_control is active",
+    )
     args = parser.parse_args()
 
     if args.live_relay and (args.skip_follower or args.skip_leader):
@@ -273,7 +306,12 @@ def main():
 
         if args.live_relay:
             live_gripper_relay(
-                follower, leader, args.hz, args.with_arm_current_control, args.arm_current_ma
+                follower,
+                leader,
+                args.hz,
+                args.with_arm_current_control,
+                args.arm_current_ma,
+                args.gripper_current_limit_ma,
             )
         else:
             print(
