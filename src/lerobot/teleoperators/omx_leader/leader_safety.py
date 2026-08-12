@@ -128,13 +128,16 @@ def compute_damping_torque(qdot: dict[str, float], damping_gain: dict[str, float
 
 
 def enter_current_control_mode(leader: OmxLeader, current_limit_ma: int) -> None:
-    # Scoped to ARM_JOINTS only -- confirmed on hardware that disabling the gripper's torque here
-    # (even briefly) has a lasting side effect on it: the gripper has a mechanical bias toward
-    # closed when unpowered, and its Current_Position target ends up shifted toward closed after
-    # torque is re-enabled (Dynamixel firmware behavior on the Torque_Enable OFF->ON transition,
-    # not something DynamixelMotorsBus.enable_torque()/disable_torque() do themselves -- they
-    # only ever write Torque_Enable). The gripper's own Operating_Mode/Current_Limit are never
-    # touched by this function, so there's no need to disable its torque at all.
+    # Scoped to ARM_JOINTS only -- confirmed on hardware that toggling the gripper's
+    # Torque_Enable off then back on (even briefly, as the unscoped torque_disabled() used to do)
+    # has a lasting side effect: in CURRENT_POSITION mode, the Dynamixel firmware appears to
+    # re-lock Goal_Position to wherever Present_Position was at that exact moment, rather than
+    # keeping the originally configured target (this is firmware behavior on the Torque_Enable
+    # OFF->ON transition, not something DynamixelMotorsBus.enable_torque()/disable_torque() do
+    # themselves -- they only ever write Torque_Enable). The gripper has no mechanical bias of
+    # its own (confirmed: fully free/backdrivable when unpowered) -- the drift only happens
+    # because of the torque toggle. This function never needs to touch the gripper's
+    # Operating_Mode/Current_Limit at all, so there's no need to disable its torque either.
     with leader.bus.torque_disabled(ARM_JOINTS):
         for joint in ARM_JOINTS:
             leader.bus.write("Operating_Mode", joint, OperatingMode.CURRENT.value)
