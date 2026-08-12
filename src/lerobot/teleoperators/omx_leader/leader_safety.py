@@ -128,10 +128,14 @@ def compute_damping_torque(qdot: dict[str, float], damping_gain: dict[str, float
 
 
 def enter_current_control_mode(leader: OmxLeader, current_limit_ma: int) -> None:
-    # torque_disabled() re-enables torque for every motor on exit, which is what we want here:
-    # writing Operating_Mode requires torque off, and we want it back on afterward to drive
-    # Goal_Current.
-    with leader.bus.torque_disabled():
+    # Scoped to ARM_JOINTS only -- confirmed on hardware that disabling the gripper's torque here
+    # (even briefly) has a lasting side effect on it: the gripper has a mechanical bias toward
+    # closed when unpowered, and its Current_Position target ends up shifted toward closed after
+    # torque is re-enabled (Dynamixel firmware behavior on the Torque_Enable OFF->ON transition,
+    # not something DynamixelMotorsBus.enable_torque()/disable_torque() do themselves -- they
+    # only ever write Torque_Enable). The gripper's own Operating_Mode/Current_Limit are never
+    # touched by this function, so there's no need to disable its torque at all.
+    with leader.bus.torque_disabled(ARM_JOINTS):
         for joint in ARM_JOINTS:
             leader.bus.write("Operating_Mode", joint, OperatingMode.CURRENT.value)
             leader.bus.write("Current_Limit", joint, current_limit_ma)

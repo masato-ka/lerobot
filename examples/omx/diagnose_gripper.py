@@ -92,6 +92,14 @@ the gripper's torque in the first place. `--scope_arm_torque_disable` tests exac
 in isolation (bypassing the real `enter_current_control_mode`, using a copy scoped to
 `ARM_JOINTS` only) before touching the shared `leader_safety.py`.
 
+RESOLVED: `--scope_arm_torque_disable` confirmed on hardware -- both leader and follower gripper
+behaved correctly. The fix (`torque_disabled(ARM_JOINTS)` instead of unscoped
+`torque_disabled()`) has been applied to `leader_safety.enter_current_control_mode()`, so
+`--with_arm_current_control` should now behave correctly even *without*
+`--scope_arm_torque_disable` (the two paths are equivalent again). `enter_current_control_mode_scoped()`
+and `--scope_arm_torque_disable` are kept as a standing regression test / historical record of
+the bug hunt, not because they're still needed to get correct behavior.
+
 Usage (run from repo root):
     python -m examples.omx.diagnose_gripper \\
         --follower_port /dev/ttyACM0 --follower_id omx_follower \\
