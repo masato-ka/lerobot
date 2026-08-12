@@ -59,13 +59,38 @@ just as strongly as at higher values -- it depends *only* on whether the arm joi
 Current Control Mode at all, not on how much current they actually draw. This rules out the
 voltage-sag/dose-response theory (a real supply-voltage sag would scale with current, not appear
 identically at 0mA). `Present_Input_Voltage` monitoring is kept since it's still useful to rule
-in/out voltage as a factor case by case, but the leading theory is now a bus/firmware-level
-effect of `Operating_Mode=CURRENT` being active on other motors sharing the bus (Dynamixel
-current-based modes actively regulate current even at a 0 target, which can behave differently
-electrically than a plain position-mode motor) -- not something a LeRobot-side code fix can
-address directly. `--gripper_current_limit_ma` (default 100, matching `OmxLeader.configure()`'s
-own value) lets you test whether simply giving the gripper's own trigger control more current
-headroom is enough to overpower whatever this effect is, as a practical mitigation.
+in/out voltage as a factor case by case.
+
+UPDATE 4: two more data points nail down the mechanism. (a) `--gripper_current_limit_ma 0` with
+*no* `--with_arm_current_control` at all -- i.e. the gripper simply has zero torque the whole
+time -- makes it fall closed on its own. So the gripper mechanism has a genuine mechanical bias
+toward closed when unpowered (spring/gravity/detent -- not a bug, just how the hardware is
+built). (b) Under `--with_arm_current_control`, *raising* `--gripper_current_limit_ma` makes it
+*harder* to pry open, not easier. If the gripper's target were still correctly
+`gripper_open_pos` (60) and it just lacked torque to fight friction, more current should make it
+easier to reach/hold open -- instead more current means it fights *harder to stay closed*. That
+only makes sense if the gripper's actual `Goal_Position` itself has shifted toward the closed end
+once the arm enters Current Control Mode, not just "not enough torque."
+
+Putting (a) + (b) together with `enter_current_control_mode()`'s own code
+(`src/lerobot/teleoperators/omx_leader/leader_safety.py`):
+```
+def enter_current_control_mode(leader, current_limit_ma):
+    with leader.bus.torque_disabled():        # scopes to ALL motors, gripper included
+        for joint in ARM_JOINTS:               # ...but only ARM_JOINTS actually need writing
+            leader.bus.write("Operating_Mode", joint, OperatingMode.CURRENT.value)
+            leader.bus.write("Current_Limit", joint, current_limit_ma)
+```
+`torque_disabled()` with no `motors` argument affects every motor, so the gripper's torque is
+disabled too, even though nothing inside the `with` block ever needs to touch it. During that
+window the gripper (per (a)) falls toward its closed mechanical rest position, and
+`DynamixelMotorsBus.enable_torque()`/`disable_torque()` (`dynamixel.py:191-201`) were confirmed
+to only ever write `Torque_Enable` -- never `Goal_Position` -- so if the effective target really
+has shifted, it's Dynamixel firmware behavior on the Torque_Enable OFF->ON transition in
+`CURRENT_POSITION` mode, outside LeRobot's control -- but avoidable entirely by never disabling
+the gripper's torque in the first place. `--scope_arm_torque_disable` tests exactly that fix
+in isolation (bypassing the real `enter_current_control_mode`, using a copy scoped to
+`ARM_JOINTS` only) before touching the shared `leader_safety.py`.
 
 Usage (run from repo root):
     python -m examples.omx.diagnose_gripper \\
@@ -90,6 +115,11 @@ Usage (run from repo root):
     python -m examples.omx.diagnose_gripper \\
         --follower_port /dev/ttyACM0 --leader_port /dev/ttyACM1 \\
         --live_relay --with_arm_current_control --gripper_current_limit_ma 400
+
+    # A/B test the candidate fix (gripper torque never disabled during the arm's mode switch):
+    python -m examples.omx.diagnose_gripper \\
+        --follower_port /dev/ttyACM0 --leader_port /dev/ttyACM1 \\
+        --live_relay --with_arm_current_control --scope_arm_torque_disable
 
 Run once right after reproducing the "gripper always pulls closed" symptom, and once right after
 running stock `lerobot-teleop` and confirming it behaves correctly -- ideally without
@@ -169,6 +199,19 @@ def stream_gripper_position(label: str, robot, hz: float) -> None:
         print()
 
 
+def enter_current_control_mode_scoped(leader, current_limit_ma: int) -> None:
+    """Candidate fix for `leader_safety.enter_current_control_mode()`: identical, except
+    `torque_disabled()` is scoped to `ARM_JOINTS` only, so the gripper's torque is never
+    disabled (it doesn't need to be -- only ARM_JOINTS' Operating_Mode/Current_Limit get
+    written). Lets `--scope_arm_torque_disable` A/B test the fix before it's applied to the
+    shared `leader_safety.py`.
+    """
+    with leader.bus.torque_disabled(ARM_JOINTS):
+        for joint in ARM_JOINTS:
+            leader.bus.write("Operating_Mode", joint, OperatingMode.CURRENT.value)
+            leader.bus.write("Current_Limit", joint, current_limit_ma)
+
+
 def live_gripper_relay(
     follower,
     leader,
@@ -176,6 +219,7 @@ def live_gripper_relay(
     with_arm_current_control: bool,
     arm_current_ma: int,
     gripper_current_limit_ma: int,
+    scope_arm_torque_disable: bool,
 ) -> None:
     """Reproduce *only* bilateral_teleop_demo.py's/record_bilateral.py's gripper relay line
     (no gravity-comp/damping/feedback math) and print leader target vs. follower actual
@@ -191,14 +235,17 @@ def live_gripper_relay(
     supply-voltage-sag effect, `Present_Input_Voltage` (leader gripper + `shoulder_pan`) is
     printed mainly to keep ruling that in/out per setup. `gripper_current_limit_ma` overrides the
     gripper's own `Current_Limit`/`Goal_Current` (`OmxLeader.configure()`'s default is 100) so you
-    can test whether simply giving the trigger more current headroom overpowers the effect --
-    a practical mitigation independent of fully explaining the mechanism.
+    can test whether simply giving the trigger more current headroom overpowers the effect.
+
+    `scope_arm_torque_disable` swaps in `enter_current_control_mode_scoped()` (above) instead of
+    the real `leader_safety.enter_current_control_mode()` -- the candidate fix under test.
     """
     print(
         "\n--- Live gripper relay: leader Present_Position -> follower Goal_Position, same as "
         "the bilateral scripts, nothing else"
         + (
-            f" (+ leader ARM_JOINTS in Current Control Mode, {arm_current_ma}mA each)"
+            f" (+ leader ARM_JOINTS in Current Control Mode, {arm_current_ma}mA each"
+            + (", torque_disabled scoped to ARM_JOINTS -- fix under test)" if scope_arm_torque_disable else ")")
             if with_arm_current_control
             else ""
         )
@@ -215,7 +262,10 @@ def live_gripper_relay(
             leader.bus.write("Current_Limit", "gripper", gripper_current_limit_ma)
         leader.bus.write("Goal_Current", "gripper", gripper_current_limit_ma)
     if with_arm_current_control:
-        enter_current_control_mode(leader, current_limit_ma=max(500, arm_current_ma))
+        if scope_arm_torque_disable:
+            enter_current_control_mode_scoped(leader, current_limit_ma=max(500, arm_current_ma))
+        else:
+            enter_current_control_mode(leader, current_limit_ma=max(500, arm_current_ma))
         arm_current = dict.fromkeys(ARM_JOINTS, arm_current_ma)
     dt = 1.0 / hz
     try:
@@ -282,12 +332,21 @@ def main():
         "OmxLeader.configure()) to test whether more current headroom overpowers the "
         "closing-bias effect while --with_arm_current_control is active",
     )
+    parser.add_argument(
+        "--scope_arm_torque_disable",
+        action="store_true",
+        help="With --with_arm_current_control, use the candidate fix (torque_disabled scoped to "
+        "ARM_JOINTS only, gripper torque never touched) instead of the real "
+        "leader_safety.enter_current_control_mode()",
+    )
     args = parser.parse_args()
 
     if args.live_relay and (args.skip_follower or args.skip_leader):
         raise SystemExit("--live_relay needs both leader and follower connected")
     if args.with_arm_current_control and not args.live_relay:
         raise SystemExit("--with_arm_current_control requires --live_relay")
+    if args.scope_arm_torque_disable and not args.with_arm_current_control:
+        raise SystemExit("--scope_arm_torque_disable requires --with_arm_current_control")
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -312,6 +371,7 @@ def main():
                 args.with_arm_current_control,
                 args.arm_current_ma,
                 args.gripper_current_limit_ma,
+                args.scope_arm_torque_disable,
             )
         else:
             print(
