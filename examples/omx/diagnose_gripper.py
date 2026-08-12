@@ -26,15 +26,34 @@ every OMX script already has -- it only prints live register state and calibrati
 contents, so the actual hardware state can be compared between a "broken" run (right after the
 bilateral scripts) and a "working" run (right after stock `lerobot-teleop`) without guessing.
 
+UPDATE: a side-by-side comparison of the static diagnostics + manual open/close mapping between
+a "broken" bilateral run and a "working" lerobot-teleop run came back *identical* on both counts
+(same Drive_Mode/Homing_Offset/calibration, and both leader and follower agree "higher normalized
+value = more open" -- no sign inversion). That rules out both hardware-state drift and a simple
+direction/sign bug. Re-reading `omx_leader.py`'s `configure()` also confirmed
+`enter_current_control_mode()`/`restore_position_mode()` (`leader_safety.py`) never touch the
+gripper's `Operating_Mode`/`Current_Limit`/`Goal_Current` (only `ARM_JOINTS`), and that
+`sync_read`/`sync_write` both default to `normalize=True`, so the leader-to-follower relay isn't
+mixing raw ticks with normalized values either. With every static/code-level hypothesis ruled
+out, `--live_relay` (below) reproduces *only* the gripper relay line from
+`bilateral_teleop_demo.py`/`record_bilateral.py`
+(`follower_action["gripper.pos"] = leader_pos["gripper"]`) in a tight loop with live printing, to
+see the relay actually tracking (or not) in real time -- the one kind of evidence a static
+snapshot can't capture.
+
 Usage (run from repo root):
     python -m examples.omx.diagnose_gripper \\
         --follower_port /dev/ttyACM0 --follower_id omx_follower \\
         --leader_port /dev/ttyACM1 --leader_id omx_leader
 
+    # Isolated live relay test (needs both leader and follower):
+    python -m examples.omx.diagnose_gripper \\
+        --follower_port /dev/ttyACM0 --leader_port /dev/ttyACM1 --live_relay
+
 Run once right after reproducing the "gripper always pulls closed" symptom, and once right after
 running stock `lerobot-teleop` and confirming it behaves correctly -- ideally without
 power-cycling the arms in between -- then diff the two outputs. Pass `--skip_follower` or
-`--skip_leader` to check just one side.
+`--skip_leader` to check just one side (not compatible with `--live_relay`, which needs both).
 """
 
 import argparse
@@ -104,6 +123,35 @@ def stream_gripper_position(label: str, robot, hz: float) -> None:
         print()
 
 
+def live_gripper_relay(follower, leader, hz: float) -> None:
+    """Reproduce *only* bilateral_teleop_demo.py's/record_bilateral.py's gripper relay line
+    (no arm/force logic at all) and print leader target vs. follower actual position + current
+    live, each tick. Squeeze/release the leader gripper by hand and watch whether the follower
+    tracks it -- this isolates the relay from everything else those scripts also do.
+    """
+    print(
+        "\n--- Live gripper relay: leader Present_Position -> follower Goal_Position, same as "
+        "the bilateral scripts, nothing else. Squeeze/release the leader gripper by hand. "
+        "Ctrl+C to stop. ---\n"
+    )
+    dt = 1.0 / hz
+    try:
+        while True:
+            leader_pos = leader.bus.sync_read("Present_Position")
+            follower.send_action({"gripper.pos": leader_pos["gripper"]})
+            follower_now = follower.bus.read("Present_Position", "gripper", normalize=True)
+            follower_current = follower.bus.read("Present_Current", "gripper", normalize=False)
+            print(
+                f"\rleader_target={leader_pos['gripper']:6.1f}  "
+                f"follower_actual={follower_now:6.1f}  follower_current={follower_current:5d}",
+                end="",
+                flush=True,
+            )
+            time.sleep(dt)
+    except KeyboardInterrupt:
+        print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -114,8 +162,16 @@ def main():
     parser.add_argument("--leader_id", default="omx_leader")
     parser.add_argument("--skip_follower", action="store_true")
     parser.add_argument("--skip_leader", action="store_true")
-    parser.add_argument("--hz", type=float, default=10.0, help="Manual-mapping print rate")
+    parser.add_argument("--hz", type=float, default=10.0, help="Manual-mapping / live-relay print rate")
+    parser.add_argument(
+        "--live_relay",
+        action="store_true",
+        help="Run the isolated live gripper-relay test instead of the manual mapping (needs both leader and follower)",
+    )
     args = parser.parse_args()
+
+    if args.live_relay and (args.skip_follower or args.skip_leader):
+        raise SystemExit("--live_relay needs both leader and follower connected")
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -132,14 +188,17 @@ def main():
             leader.connect(calibrate=True)
             print_static_diagnostics("Leader", leader)
 
-        print(
-            "\nStatic diagnostics done. Next: manually move each connected gripper by hand to "
-            "map raw/normalized values to physical open/closed. Ctrl+C after each to move on.\n"
-        )
-        if follower is not None:
-            stream_gripper_position("Follower", follower, args.hz)
-        if leader is not None:
-            stream_gripper_position("Leader", leader, args.hz)
+        if args.live_relay:
+            live_gripper_relay(follower, leader, args.hz)
+        else:
+            print(
+                "\nStatic diagnostics done. Next: manually move each connected gripper by hand to "
+                "map raw/normalized values to physical open/closed. Ctrl+C after each to move on.\n"
+            )
+            if follower is not None:
+                stream_gripper_position("Follower", follower, args.hz)
+            if leader is not None:
+                stream_gripper_position("Leader", leader, args.hz)
     finally:
         if follower is not None:
             follower.disconnect()
