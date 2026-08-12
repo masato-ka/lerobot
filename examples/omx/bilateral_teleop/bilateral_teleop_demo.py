@@ -28,6 +28,16 @@ leader and follower have every arm joint's `Drive_Mode` set the same way (`NON_I
 this flip is expected to be uniform across joints rather than needing a different sign per
 joint, but verify per joint if some feel backwards after the global flip.
 
+KNOWN LIMITATION -- follower position offset at full extension: for the same physical
+end-effector pose, the follower can end up ~1-2cm off (confirmed: higher) compared to stock
+`lerobot-teleop`, but only when the leader is reached far forward (e.g. `shoulder_pan > 0` with
+`shoulder_lift`/`elbow_flex < 0`) -- fine close to the base. Root-caused
+(`examples/omx/diagnose_pose.py`) to residual gravity-compensation error in the leader (not a
+follower-tracking bug), amplified by the kinematic Jacobian at extension. See
+`src/lerobot/teleoperators/omx_leader/gravity_compensation.py`'s module docstring for the full
+writeup. Accepted as a known limitation -- avoid relying on full-extension poses for
+precision-critical demonstration recording until gravity comp is calibrated more precisely.
+
 Usage (run from repo root; showing the confirmed defaults explicitly -- they apply even if
 omitted, except --feedback_gain which stays off by default -- pass it explicitly to enable
 feedback):

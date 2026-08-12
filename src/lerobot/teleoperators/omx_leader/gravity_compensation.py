@@ -31,6 +31,20 @@ all-zero home keyframe, consistent with this), and defaults every joint's sign t
 (untested). Verify this against your own arm with
 `examples/omx/gravity_compensation/preview_gravity_model.py` -- which disables motor torque
 and only prints the computed values -- before ever enabling Current Control Mode.
+
+KNOWN LIMITATION -- gravity-comp residual error at full extension: `--modifier` (see
+`examples/omx/gravity_compensation/gravity_comp_demo.py`) is tuned empirically to feel
+"comfortable," not calibrated to be physically exact. Confirmed on hardware
+(`examples/omx/diagnose_pose.py`): for the same physical end-effector pose, the leader arm
+settles at a measurably different joint configuration under active Current Control Mode than
+when fully passive (as in stock `lerobot-teleop`) -- joint-limit-barrier engagement and
+velocity damping were both ruled out (the barrier's margins weren't reached, and damping is ~0
+once a pose is held still), leaving gravity-comp error as the steady-state cause. This residual
+error is roughly constant in joint-angle terms, but its Cartesian consequence at the
+end-effector scales with the arm's kinematic Jacobian -- negligible folded close to the base,
+up to ~1-2cm of height error when reached out to full extension. Improving this further would
+need a more precise gravity-comp calibration (e.g. better URDF mass/inertia parameters) rather
+than a `--modifier` tweak; accepted as a known limitation for now.
 """
 
 from __future__ import annotations

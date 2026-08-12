@@ -42,6 +42,30 @@ Usage (run from repo root):
 Hold each pose (near the base, and reached far forward with shoulder_pan > 0 /
 shoulder_lift or elbow_flex < 0) for a few seconds under both modes and compare the printed
 leader/follower/diff table.
+
+CONCLUSION (confirmed on hardware): the `leader`/`follower`/`diff` table showed `diff` staying
+small (roughly -1 to +1) in all four combinations (near base / extended, passive / active) --
+the follower tracks whatever the leader is currently reporting accurately. The `leader` column
+itself, however, differed by several normalized units between the passive and active runs for
+the *same* physical pose (gripper resting on the same block), especially at `shoulder_lift`/
+`elbow_flex`/`wrist_flex` in the extended pose. So the discrepancy is not a follower-tracking
+problem -- it's that the leader itself settles at a measurably different joint configuration
+under active Current Control Mode than fully passive, for what a human intends as the same
+pose. Joint-limit barrier and velocity damping were both ruled out as the steady-state cause
+(the observed joint values aren't near `JOINT_LIMIT_RANGE`'s margins, and `qdot ≈ 0` once a pose
+is held still for a few seconds, so `compute_damping_torque()`'s output is ~0 at the moment of
+comparison). That leaves gravity compensation -- the one term that stays nonzero at rest -- as
+the leading explanation: `OmxGravityModel`'s `--modifier` gain is an empirically "comfortable"
+value (see `gravity_comp_demo.py`'s SAFETY notes), not a precise physical calibration, and any
+residual error compounds with the arm's kinematic Jacobian (the same joint-angle error maps to a
+much larger Cartesian displacement when the arm is extended than folded near the base) plus the
+fact that required gravity torque itself is larger when extended, so a proportional gain error
+also has more to act on. Net effect confirmed on hardware: up to ~1-2cm of end-effector height
+error at full extension, negligible near the base. Accepted as a known limitation rather than
+pursued further (see `src/lerobot/teleoperators/omx_leader/gravity_compensation.py` and the
+bilateral script docstrings for the user-facing note) -- improving it further would need a more
+precise gravity-comp calibration (e.g. better URDF mass/inertia parameters), which is out of
+scope for now.
 """
 
 import argparse
