@@ -142,19 +142,19 @@ $$
 ```mermaid
 sequenceDiagram
     participant L as Leader Bus
-    participant Loop as 制御ループ (bilateral_teleop_demo.py)
+    participant Ctrl as 制御ループ (bilateral_teleop_demo.py)
     participant F as Follower Bus
     participant N as NEXT (OnlineExternalTorqueEstimator)
 
-    Loop->>L: sync_read(Present_Position, Present_Velocity)
-    Loop->>F: send_action(q_leader) — 位置テレオペ
-    Loop->>F: sync_read(Present_Position, Present_Velocity, Present_Current)
-    Loop->>N: update(q, qdot, goal_q, current)
-    N-->>Loop: tau_ext
-    Loop->>Loop: tau_gravity = RNEA(q_leader)
-    Loop->>Loop: tau_limit, tau_damping を計算
-    Loop->>Loop: tau_leader = 4項の合成 (mA換算・クリップ)
-    Loop->>L: sync_write(Goal_Current, tau_leader)
+    Ctrl->>L: sync_read(Present_Position, Present_Velocity)
+    Ctrl->>F: send_action(q_leader) — 位置テレオペ
+    Ctrl->>F: sync_read(Present_Position, Present_Velocity, Present_Current)
+    Ctrl->>N: update(q, qdot, goal_q, current)
+    N-->>Ctrl: tau_ext
+    Ctrl->>Ctrl: tau_gravity = RNEA(q_leader)
+    Ctrl->>Ctrl: tau_limit, tau_damping を計算
+    Ctrl->>Ctrl: tau_leader = 4項の合成 (mA換算・クリップ)
+    Ctrl->>L: sync_write(Goal_Current, tau_leader)
 ```
 
 `tau_ext` はフォロワーの生レジスタ単位（Nm換算していない、§2.5参照）であるため、その符号が「押し返す方向」と直感的に一致する保証はない。実機で確認した結果、`tau_ext` の符号は直感と逆であり、`--feedback_gain` は負の値（実測 `-0.3` 付近）が正しく機能した。
