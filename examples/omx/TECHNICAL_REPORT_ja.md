@@ -2,7 +2,7 @@
 
 対象機体: ROBOTIS OpenManipulator-X (`omx_follower` / `omx_leader`) ・ フレームワーク: [HuggingFace LeRobot](https://github.com/huggingface/lerobot) ・ ブランチ: `exp/omx-force-feedback`
 
-> 本書は Markdown 形式で記述しており、`pandoc examples/omx/TECHNICAL_REPORT.md -o report.pdf` 等でPDF化できます。数式は `$...$`（インライン）/ `$$...$$`（ブロック）のLaTeX記法、図は Mermaid のフェンスコードブロックを使用しています。GitHub上ではどちらもそのまま描画されます。pandocでPDF化する場合、Mermaid図の描画には別途 `mermaid-filter` 等が必要です。
+> 本書は Markdown 形式で記述しており、`pandoc examples/omx/TECHNICAL_REPORT_ja.md -o report.pdf` 等でPDF化できます。数式は `$...$`（インライン）/ `$$...$$`（ブロック）のLaTeX記法、図は Mermaid のフェンスコードブロックを使用しています。GitHub上ではどちらもそのまま描画されます。pandocでPDF化する場合、Mermaid図の描画には別途 `mermaid-filter` 等が必要です。英語版は [`TECHNICAL_REPORT_en.md`](./TECHNICAL_REPORT_en.md) を参照してください。
 
 ---
 
