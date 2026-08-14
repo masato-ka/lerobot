@@ -71,6 +71,20 @@ JOINT_LIMIT_RANGE: dict[str, tuple[float, float]] = {
 # configured limit rather than right at it.
 JOINT_LIMIT_SAFETY_MARGIN = 5.0
 
+# tau_ext = tau_m - f_theta(x) (FACTR2 eq. 2's own residual-current definition) does not, on
+# this arm, point in the intuitive "push the leader back the same way" direction -- confirmed on
+# hardware, uniform across all 5 arm joints. This is *not* a Drive_Mode mismatch like the
+# gripper's (Phase 6): the arm joints' Drive_Mode is NON_INVERTED on both leader and follower,
+# and position teleop + gravity compensation both work correctly with no extra sign flip, so the
+# discrepancy is specific to translating an estimated *current/torque* residual into a leader
+# feedback command, not to the arm's physical/position sign convention. Applying this constant
+# only here -- rather than negating tau_ext itself, e.g. inside OnlineExternalTorqueEstimator --
+# keeps tau_ext's own sign exactly as FACTR2/NEXT define it, so recorded datasets' force.*
+# columns and evaluate_free_motion.py/evaluate_dataset_force.py's stats are unaffected; only the
+# leader feedback torque is corrected, letting --feedback_gain be given as an intuitive positive
+# value (confirmed-good magnitude carries over unchanged: +0.3 now behaves like the old -0.3).
+FEEDBACK_SIGN = -1.0
+
 
 def resolve_per_joint(
     args: argparse.Namespace,
@@ -125,6 +139,20 @@ def compute_joint_limit_torque(
 def compute_damping_torque(qdot: dict[str, float], damping_gain: dict[str, float]) -> dict[str, float]:
     """`-damping_gain * qdot` per joint (mA-scale, see `KT_NM_PER_A` comment above)."""
     return {joint: -damping_gain[joint] * qdot[joint] for joint in ARM_JOINTS}
+
+
+def compute_feedback_torque(
+    tau_ext: dict[str, float], feedback_gain: dict[str, float], feedback_limit_ma: float
+) -> dict[str, float]:
+    """`FEEDBACK_SIGN * feedback_gain * tau_ext` per joint (mA-scale, see `KT_NM_PER_A` comment
+    above), clipped to `+/-feedback_limit_ma`. See `FEEDBACK_SIGN`'s comment for why the sign
+    correction lives here rather than on `tau_ext` itself.
+    """
+    torque: dict[str, float] = {}
+    for joint in ARM_JOINTS:
+        ma = FEEDBACK_SIGN * feedback_gain[joint] * tau_ext[joint]
+        torque[joint] = max(-feedback_limit_ma, min(feedback_limit_ma, ma))
+    return torque
 
 
 def enter_current_control_mode(leader: OmxLeader, current_limit_ma: int) -> None:

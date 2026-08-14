@@ -157,7 +157,7 @@ sequenceDiagram
     Ctrl->>L: sync_write(Goal_Current, tau_leader)
 ```
 
-`tau_ext` はフォロワーの生レジスタ単位（Nm換算していない、§2.5参照）であるため、その符号が「押し返す方向」と直感的に一致する保証はない。実機で確認した結果、`tau_ext` の符号は直感と逆であり、`--feedback_gain` は負の値（実測 `-0.3` 付近）が正しく機能した。
+`tau_ext` はフォロワーの生レジスタ単位（Nm換算していない、§2.5参照）であるため、その符号が「押し返す方向」と直感的に一致する保証はない。実機で確認した結果、`tau_ext` の符号（FACTR2/NEXTの定義そのまま、$\tau_{ext} = \tau_m - f_\theta(x)$）は直感と逆であった。この符号ズレはグリッパの `Drive_Mode` 不一致 (§2.7, Phase 6) のようなレジスタ設定ミスではない — アーム5関節の `Drive_Mode` はリーダー・フォロワーで一致しており、位置テレオペと重力補償も符号反転無しに正しく動作するため、ズレは「電流/トルクの残差をリーダーへの指令に変換する」用途固有のものと判断した。そこで `tau_ext` 自体は変更せず、フィードバック力への変換関数 `leader_safety.compute_feedback_torque()` の内部でのみ定数 `FEEDBACK_SIGN = -1.0` を掛けて補正するようにした。この修正により、**`--feedback_gain` は正の値（`0.3` 付近）を指定すれば直感通りの方向にフィードバックがかかる**（内部的には `-0.3` を指定していたときと数学的に同一の電流指令になる）。
 
 #### 2.1.1 バイラテラル制御方式の分類
 
@@ -474,7 +474,7 @@ uv run python -m examples.omx.bilateral_teleop.bilateral_teleop_demo \
     --modifier 0.09 --modifier_shoulder_lift 0.1 \
     --modifier_shoulder_pan 0.0 --modifier_wrist_roll 0.0 \
     --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0 \
-    --feedback_gain -0.3
+    --feedback_gain 0.3
 ```
 
 **確認事項**: フォロワーの手先を押した際、リーダー側にその反力が伝わるか。反力の向きが逆に感じる場合は `--feedback_gain` の符号を反転する。
@@ -489,7 +489,7 @@ uv run python -m examples.omx.bilateral_teleop.record_bilateral \
     --urdf_path /path/to/omx_l.urdf --checkpoint checkpoints/omx_next.pt \
     --modifier 0.09 --modifier_shoulder_lift 0.1 \
     --modifier_shoulder_pan 0.0 --modifier_wrist_roll 0.0 \
-    --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0 --feedback_gain -0.3 \
+    --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0 --feedback_gain 0.3 \
     --repo_id <hf_username>/omx_bilateral_force --root data/omx_bilateral_force \
     --num_episodes 10 --episode_duration_s 30 --single_task "Pick up the cube" \
     --cameras="{ wrist: {type: opencv, index_or_path: 6, width: 640, height: 480, fps: 30, fourcc: MJPG} }" \

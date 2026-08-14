@@ -9,8 +9,9 @@ single combined loop:
      (`OnlineExternalTorqueEstimator`, see `examples/omx/force_sensing/`) to get `tau_ext`.
   3. Read the leader's own state and compute gravity compensation + joint-limit barrier +
      damping (same as `gravity_comp_demo.py`, via `leader_safety.py`/`gravity_compensation.py`).
-  4. `tau_feedback = feedback_gain[joint] * tau_ext[joint]`, clipped to `--feedback_limit_ma`
-     independently of the overall `--current_limit_ma`.
+  4. `tau_feedback = compute_feedback_torque(tau_ext, feedback_gain, feedback_limit_ma)`
+     (`leader_safety.py`), clipped to `--feedback_limit_ma` independently of the overall
+     `--current_limit_ma`.
   5. Sum all leader torque terms, convert/clip to mA, write `Goal_Current`.
 
 `--feedback_gain` defaults to `0.0`: with no other flags, this script behaves exactly like
@@ -19,14 +20,15 @@ the combined loop works before turning on real force feedback (see gravity_comp_
 SAFETY notes, which all still apply here).
 
 `tau_ext` uses the follower's raw per-joint sensing units (see
-src/lerobot/force_estimation/README.md), not Nm, and its sign relative to "which direction the
-leader should push back" is unverified in general -- `feedback_gain` is deliberately allowed to
-be negative so a backwards joint can just have its sign flipped during tuning. Confirmed on
-hardware: `tau_ext`'s sign is opposite the intuitive "push back the same way" direction, so a
-*negative* `--feedback_gain` (e.g. `-0.2`) is what actually renders correctly here -- both
-leader and follower have every arm joint's `Drive_Mode` set the same way (`NON_INVERTED`), so
-this flip is expected to be uniform across joints rather than needing a different sign per
-joint, but verify per joint if some feel backwards after the global flip.
+src/lerobot/force_estimation/README.md), not Nm. Its own sign follows FACTR2/NEXT's definition
+(`tau_ext = tau_m - f_theta(x)`) exactly and is never touched by this script -- but that
+definition does not, on this arm, point in the intuitive "push the leader back the same way"
+direction, confirmed uniform across all 5 arm joints (this is not a `Drive_Mode` mismatch like
+the gripper's, see `leader_safety.FEEDBACK_SIGN`'s comment for the full reasoning).
+`compute_feedback_torque()` applies that correction once, centrally, so **a positive
+`--feedback_gain` (e.g. `0.3`) is what renders correctly here** -- `feedback_gain` is still
+deliberately allowed to be negative too, in case a specific joint or unit ever needs its own
+sign flipped during tuning; verify per joint if some feel backwards.
 
 KNOWN LIMITATION -- follower position offset at full extension: for the same physical
 end-effector pose, the follower can end up ~1-2cm off (confirmed: higher) compared to stock
@@ -48,7 +50,7 @@ feedback):
         --modifier 0.09 --modifier_shoulder_lift 0.1 \\
         --modifier_shoulder_pan 0.0 --modifier_wrist_roll 0.0 \\
         --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0 \\
-        --feedback_gain -0.2
+        --feedback_gain 0.3
 """
 
 import argparse
@@ -63,6 +65,7 @@ from lerobot.teleoperators.omx_leader.leader_safety import (
     JOINT_LIMIT_RANGE,
     KT_NM_PER_A,
     compute_damping_torque,
+    compute_feedback_torque,
     compute_joint_limit_torque,
     enter_current_control_mode,
     resolve_modifiers,
@@ -195,12 +198,11 @@ def main():
             tau_damping_ma = compute_damping_torque(qdot_leader, damping_gains)
 
             # 4-5. Combine, including the clipped force-feedback term, and write.
+            feedback_ma_by_joint = compute_feedback_torque(tau_ext, feedback_gains, args.feedback_limit_ma)
             goal_current_ma = {}
             for joint in ARM_JOINTS:
                 gravity_ma = (tau_g[joint] / KT_NM_PER_A) * modifiers[joint] * 1000.0
-                feedback_ma = feedback_gains[joint] * tau_ext[joint]
-                feedback_ma = max(-args.feedback_limit_ma, min(args.feedback_limit_ma, feedback_ma))
-                total_ma = gravity_ma + tau_limit_ma[joint] + tau_damping_ma[joint] + feedback_ma
+                total_ma = gravity_ma + tau_limit_ma[joint] + tau_damping_ma[joint] + feedback_ma_by_joint[joint]
                 total_ma = max(-args.current_limit_ma, min(args.current_limit_ma, total_ma))
                 goal_current_ma[joint] = int(total_ma)
             leader.bus.sync_write("Goal_Current", goal_current_ma)
