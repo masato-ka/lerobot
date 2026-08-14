@@ -70,6 +70,7 @@ from lerobot.teleoperators.omx_leader.leader_safety import (
     JOINT_LIMIT_RANGE,
     KT_NM_PER_A,
     compute_damping_torque,
+    compute_feedback_torque,
     compute_joint_limit_torque,
     enter_current_control_mode,
     resolve_modifiers,
@@ -291,14 +292,18 @@ def main():
                         )
                         tau_damping_ma = compute_damping_torque(qdot_leader, damping_gains)
 
+                        feedback_ma_by_joint = compute_feedback_torque(
+                            tau_ext, feedback_gains, args.feedback_limit_ma
+                        )
                         goal_current_ma = {}
                         for joint in ARM_JOINTS:
                             gravity_ma = (tau_g[joint] / KT_NM_PER_A) * modifiers[joint] * 1000.0
-                            feedback_ma = feedback_gains[joint] * tau_ext[joint]
-                            feedback_ma = max(
-                                -args.feedback_limit_ma, min(args.feedback_limit_ma, feedback_ma)
+                            total_ma = (
+                                gravity_ma
+                                + tau_limit_ma[joint]
+                                + tau_damping_ma[joint]
+                                + feedback_ma_by_joint[joint]
                             )
-                            total_ma = gravity_ma + tau_limit_ma[joint] + tau_damping_ma[joint] + feedback_ma
                             total_ma = max(-args.current_limit_ma, min(args.current_limit_ma, total_ma))
                             goal_current_ma[joint] = int(total_ma)
                         leader.bus.sync_write("Goal_Current", goal_current_ma)

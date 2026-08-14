@@ -155,7 +155,7 @@ sequenceDiagram
     Ctrl->>L: sync_write(Goal_Current, tau_leader)
 ```
 
-`tau_ext` is expressed in the follower's raw register units (not converted to Nm, see §2.5), so there is no guarantee its sign intuitively matches "the direction to push back." On hardware, we confirmed `tau_ext`'s sign is opposite the intuitive direction, and a negative `--feedback_gain` (measured around `-0.3`) is what worked correctly.
+`tau_ext` is expressed in the follower's raw register units (not converted to Nm, see §2.5), so there is no guarantee its sign intuitively matches "the direction to push back." On hardware, we confirmed `tau_ext`'s sign (FACTR2/NEXT's own definition, unchanged: $\tau_{ext} = \tau_m - f_\theta(x)$) is opposite the intuitive direction. This is not a register-configuration mistake like the gripper's `Drive_Mode` mismatch (§2.7, Phase 6) — the arm joints' `Drive_Mode` matches between leader and follower, and position teleop and gravity compensation both work correctly with no sign flip, so the discrepancy is specific to translating a current/torque residual into a command for the leader. We therefore left `tau_ext` itself unchanged and instead apply a constant `FEEDBACK_SIGN = -1.0` only inside the feedback-torque conversion function, `leader_safety.compute_feedback_torque()`. With this fix, **a positive `--feedback_gain` (around `0.3`) now renders feedback in the intuitive direction** (internally, this produces the exact same current command as the previous `-0.3` did).
 
 #### 2.1.1 Classification of Bilateral Control Schemes
 
@@ -472,7 +472,7 @@ uv run python -m examples.omx.bilateral_teleop.bilateral_teleop_demo \
     --modifier 0.09 --modifier_shoulder_lift 0.1 \
     --modifier_shoulder_pan 0.0 --modifier_wrist_roll 0.0 \
     --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0 \
-    --feedback_gain -0.3
+    --feedback_gain 0.3
 ```
 
 **Check**: when you push on the follower's end-effector, does the reaction force reach the leader side? If the direction feels reversed, flip the sign of `--feedback_gain`.
@@ -487,7 +487,7 @@ uv run python -m examples.omx.bilateral_teleop.record_bilateral \
     --urdf_path /path/to/omx_l.urdf --checkpoint checkpoints/omx_next.pt \
     --modifier 0.09 --modifier_shoulder_lift 0.1 \
     --modifier_shoulder_pan 0.0 --modifier_wrist_roll 0.0 \
-    --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0 --feedback_gain -0.3 \
+    --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0 --feedback_gain 0.3 \
     --repo_id <hf_username>/omx_bilateral_force --root data/omx_bilateral_force \
     --num_episodes 10 --episode_duration_s 30 --single_task "Pick up the cube" \
     --cameras="{ wrist: {type: opencv, index_or_path: 6, width: 640, height: 480, fps: 30, fourcc: MJPG} }" \
