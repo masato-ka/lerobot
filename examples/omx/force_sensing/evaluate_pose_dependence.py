@@ -19,6 +19,12 @@ Usage (run from repo root):
         --checkpoint checkpoints/omx_next.pt \\
         --data data/omx_free_motion/run1.npz data/omx_free_motion/run2.npz \\
         --bins 5
+
+Pass `--qdot_threshold` to restrict each joint's bins to samples where *that joint's* |qdot| is
+below the threshold (native units of the logged `Present_Velocity`, e.g. 2.0), isolating
+near-static-hold noise from in-motion noise -- `collect_free_motion.py` sweeps at 15-45
+units/s, so most samples are in motion; a low threshold keeps only the near-zero-velocity tail
+(direction reversals, dwell points), which shrinks `n` per bin substantially.
 """
 
 import argparse
@@ -76,6 +82,16 @@ def main():
     parser.add_argument("--checkpoint", required=True, help="Path to a checkpoint saved by train_next.py")
     parser.add_argument("--data", nargs="+", required=True, help="Path(s) to .npz free-motion logs to replay")
     parser.add_argument("--bins", type=int, default=5, help="Number of quantile bins per joint (default: 5)")
+    parser.add_argument(
+        "--qdot_threshold",
+        type=float,
+        default=None,
+        help=(
+            "If set, only include samples where this joint's own |qdot| is below the threshold "
+            "(native Present_Velocity units), isolating near-static-hold noise from in-motion "
+            "noise. Default: no filtering (use all samples, matching evaluate_free_motion.py)."
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -84,28 +100,45 @@ def main():
 
     all_tau_ext = []
     all_q = []
+    all_qdot = []
     for path in args.data:
         episode = resample_uniform(load_episode(path), estimator.resample_hz)
-        tau_ext, q = evaluate_episode(estimator, episode)
+        tau_ext, q, qdot = evaluate_episode(estimator, episode)
         logger.info(f"{path}: {len(tau_ext)} evaluated steps")
         all_tau_ext.append(tau_ext)
         all_q.append(q)
+        all_qdot.append(qdot)
 
     tau_ext = np.concatenate(all_tau_ext, axis=0)
     q = np.concatenate(all_q, axis=0)
+    qdot = np.concatenate(all_qdot, axis=0)
     print(f"\n{len(tau_ext)} total steps evaluated across {len(args.data)} episode(s).")
     print(
         "Per-joint tau_ext noise floor, binned by that joint's own pose (quantile bins). If this "
         "data is contact-free, a well-fit model should show roughly flat mean/std across bins --\n"
         "a bin-to-bin spread indicates a pose-dependent residual, not genuine contact.\n"
     )
+    if args.qdot_threshold is not None:
+        print(f"Filtering to samples where |qdot| < {args.qdot_threshold} (per joint, native units).\n")
 
     sensitivity: list[tuple[str, float]] = []
     for i, joint in enumerate(estimator.joint_names):
         family = MOTOR_FAMILY.get(joint, "?")
-        print(f"{joint} ({family})")
+        q_col = q[:, i]
+        tau_col = tau_ext[:, i]
+        if args.qdot_threshold is not None:
+            mask = np.abs(qdot[:, i]) < args.qdot_threshold
+            q_col = q_col[mask]
+            tau_col = tau_col[mask]
+            print(f"{joint} ({family}) -- {mask.sum()}/{len(mask)} samples kept")
+        else:
+            print(f"{joint} ({family})")
         print(f"  {'q range':<24}{'n':>8}{'mean':>10}{'std':>10}{'max|.|':>10}")
-        rows = pose_bin_stats(q[:, i], tau_ext[:, i], args.bins)
+        if len(q_col) == 0:
+            print("  (no samples pass the qdot filter)\n")
+            sensitivity.append((joint, 0.0))
+            continue
+        rows = pose_bin_stats(q_col, tau_col, args.bins)
         for lo, hi, n, mean, std, max_abs in rows:
             q_range = f"[{lo:.1f}, {hi:.1f}]"
             print(f"  {q_range:<24}{n:>8}{mean:>10.2f}{std:>10.2f}{max_abs:>10.2f}")
