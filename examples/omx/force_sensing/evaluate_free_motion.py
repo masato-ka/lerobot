@@ -45,20 +45,23 @@ def side_stats(col: np.ndarray) -> tuple[int, float, float, float]:
 
 def evaluate_episode(
     estimator: OnlineExternalTorqueEstimator, episode: FreeMotionEpisode
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Replay one resampled episode through `estimator`, step by step.
 
     Returns:
-        `tuple[np.ndarray, np.ndarray]`: `(tau_ext, q)`, each shape `(T - history_length + 1,
-        num_joints)`, in `estimator.joint_names` order. `q[i]` is the pose that produced
-        `tau_ext[i]` (i.e. `episode.q` shifted by `history_length - 1`, since `update()` returns
-        `None` until the ring buffer fills) -- used by `evaluate_pose_dependence.py` to check
-        whether `tau_ext`'s noise floor depends on the robot's pose.
+        `tuple[np.ndarray, np.ndarray, np.ndarray]`: `(tau_ext, q, qdot)`, each shape
+        `(T - history_length + 1, num_joints)`, in `estimator.joint_names` order. `q[i]`/`qdot[i]`
+        are the pose/velocity that produced `tau_ext[i]` (i.e. `episode.q`/`episode.qdot` shifted
+        by `history_length - 1`, since `update()` returns `None` until the ring buffer fills) --
+        used by `evaluate_pose_dependence.py` to check whether `tau_ext`'s noise floor depends on
+        the robot's pose (and, via `--qdot_threshold`, to isolate near-static-hold samples from
+        in-motion ones).
     """
     estimator.reset()
     joint_names = episode.joint_names
     results = []
     q_results = []
+    qdot_results = []
     for i in range(len(episode.t)):
         q = {j: float(episode.q[i, k]) for k, j in enumerate(joint_names)}
         qdot = {j: float(episode.qdot[i, k]) for k, j in enumerate(joint_names)}
@@ -68,7 +71,8 @@ def evaluate_episode(
         if tau_ext is not None:
             results.append([tau_ext[j] for j in estimator.joint_names])
             q_results.append([q[j] for j in estimator.joint_names])
-    return np.array(results), np.array(q_results)
+            qdot_results.append([qdot[j] for j in estimator.joint_names])
+    return np.array(results), np.array(q_results), np.array(qdot_results)
 
 
 def main():
@@ -86,7 +90,7 @@ def main():
     all_tau_ext = []
     for path in args.data:
         episode = resample_uniform(load_episode(path), estimator.resample_hz)
-        tau_ext, _q = evaluate_episode(estimator, episode)
+        tau_ext, _q, _qdot = evaluate_episode(estimator, episode)
         logger.info(f"{path}: {len(tau_ext)} evaluated steps")
         all_tau_ext.append(tau_ext)
 
