@@ -3,11 +3,32 @@
 estimator (arXiv:2606.12406) on the OMX follower arm.
 
 Moves the arm through per-joint sweeps (each of the 5 arm joints individually, across its
-safe range, at a slow and a fast speed) followed by randomized multi-joint motion, for a
-configurable duration. No contact should occur during collection — keep the workspace clear.
-At every control step, logs (with real elapsed timestamps): present position, present
-velocity, the commanded goal position (for the tracking-error feature), and present
-current/load, for each arm joint.
+safe range, at a slow and a fast speed), a dedicated shoulder_lift x elbow_flex grid sweep
+(Phase A2, see below), then randomized multi-joint motion, for a configurable duration. No
+contact should occur during collection — keep the workspace clear. At every control step,
+logs (with real elapsed timestamps): present position, present velocity, the commanded goal
+position (for the tracking-error feature), and present current/load, for each arm joint.
+
+Phase A2 (shoulder_lift x elbow_flex grid): a real-world investigation (see
+src/lerobot/force_estimation/README.md) found that tau_ext's noise floor has a systematic,
+pose-dependent bias concentrated in shoulder_lift/elbow_flex -- the two gravity-loaded,
+kinematically-coupled joints -- that persists even near-zero velocity. The other phases only
+ever sweep these two joints *individually* (holding the other at home); their *combined*
+configuration space was left to Phase B's unstructured random sampling. Phase A2 sweeps a
+dedicated (shoulder_lift, elbow_flex) grid to densify exactly that region. Each grid point is
+also held still (dwelled) for `--dwell_sec` after arriving -- long enough to exceed
+train_next.py's default `--history-length 50` @ `--resample-hz 100.0` (0.5s), so a dwell
+period contributes some windows whose *entire* input history is genuinely static, not just a
+low-velocity instant mid-sweep (which is all the rest of this script ever produces). If you
+change `--history-length`/`--resample-hz` at training time, reconsider `--dwell_sec` too.
+
+To avoid baking in one fixed backlash state, the grid is visited twice by default
+(`--grid_passes`): once in a random shuffled order, once in the *exact reverse* of that
+order (a deliberate opposite-direction pass, not just another random shuffle), with any
+further passes freshly reshuffled. This is a statistical/aggregate argument across the whole
+collection run, not a per-point controlled experiment -- it doesn't guarantee every single
+grid point is approached from both directions, just that the run as a whole isn't one
+repeated monotonic pattern.
 
 SAFETY: `shoulder_lift` and `elbow_flex` are NOT independent axes on this arm — a low
 `elbow_flex` combined with a low `shoulder_lift` drives the wrist/gripper down through the
@@ -16,7 +37,11 @@ function of `shoulder_lift`) and the wrist_flex/shoulder_pan/wrist_roll ranges f
 `examples/omx/record_grab.py`'s `_random_stuck_pose()`, which is the only place in this repo
 those joints' *combined* safe range has actually been exercised. Every pose this script
 commands is built through `safe_pose()` below, which re-derives `elbow_flex`/`wrist_flex`
-from the current `shoulder_lift` rather than sweeping them independently.
+from the current `shoulder_lift` rather than sweeping them independently. Note that while
+Phase A2's grid stays within this same envelope *formula*, it deliberately visits combined
+(shoulder_lift, elbow_flex) corner extremes together -- a combination Phase A never exercises
+(it only ever varies one of the two at a time) and Phase B only reaches by low-probability
+chance -- so treat a first run of this script the same as any other envelope change below.
 
 Even so, verify this envelope against your own physical setup (mounting height, cables,
 nearby obstacles) before running unattended — start with a short `--duration_min` and stay
@@ -26,7 +51,7 @@ far) if it detects a motor has hit its overload/hardware-error protection.
 Usage (run from repo root):
     python -m examples.omx.force_sensing.collect_free_motion \\
         --port /dev/ttyACM0 --robot_id omx_follower \\
-        --output data/omx_free_motion/run1.npz --duration_min 12
+        --output data/omx_free_motion/run1.npz --duration_min 15
 """
 
 import argparse
@@ -193,7 +218,97 @@ def _move_and_log(
     return target_pose
 
 
-def collect(robot: OmxFollower, log: FreeMotionLogger, duration_min: float) -> None:
+def _move_and_dwell(
+    robot: OmxFollower,
+    log: FreeMotionLogger,
+    current_pose: dict[str, float],
+    target_pose: dict[str, float],
+    speed: float,
+    dwell_sec: float,
+    hz: float = LOOP_HZ,
+) -> dict[str, float]:
+    """`_move_and_log()` to `target_pose`, then hold and keep logging there for `dwell_sec`
+    more seconds. A separate wrapper (rather than a parameter on `_move_and_log()` itself) so
+    dwelling isn't silently skipped by `_move_and_log()`'s `max_dist < 0.5` early return, and
+    so `_move_and_log()`'s own contract ("interpolate and log") stays unchanged.
+    """
+    pose = _move_and_log(robot, log, current_pose, target_pose, speed, hz)
+    if dwell_sec <= 0:
+        return pose
+    dt = 1.0 / hz
+    end = time.perf_counter() + dwell_sec
+    last_health_check = time.perf_counter()
+    while time.perf_counter() < end:
+        loop_start = time.perf_counter()
+        robot.send_action({f"{j}.pos": v for j, v in pose.items()})
+        log.log_step(robot, pose)
+        if loop_start - last_health_check > 0.5:
+            _check_motor_health(robot)
+            last_health_check = loop_start
+        precise_sleep(max(0.0, dt - (time.perf_counter() - loop_start)))
+    _check_motor_health(robot)
+    return pose
+
+
+def _build_sl_ef_grid(n_sl: int, n_ef: int) -> list[tuple[float, float]]:
+    """`(shoulder_lift, elbow_flex)` grid spanning `SHOULDER_LIFT_RANGE` at `n_sl` points and,
+    for each, `safe_elbow_flex_range(sl)` at `n_ef` points -- reuses the existing validated
+    envelope directly, so this doesn't add a new safe region, only denser sampling within the
+    existing one.
+    """
+    grid = []
+    for sl in np.linspace(*SHOULDER_LIFT_RANGE, n_sl):
+        lo, hi = safe_elbow_flex_range(float(sl))
+        for ef in np.linspace(lo, hi, n_ef):
+            grid.append((float(sl), float(ef)))
+    return grid
+
+
+def _sl_ef_grid_sweep(
+    robot: OmxFollower,
+    log: FreeMotionLogger,
+    pose: dict[str, float],
+    ref: dict[str, float],
+    rng: np.random.Generator,
+    n_sl: int,
+    n_ef: int,
+    n_passes: int,
+    dwell_sec: float,
+    end_time: float,
+) -> dict[str, float]:
+    """Visit `_build_sl_ef_grid(n_sl, n_ef)` for `n_passes` passes: pass 0 in a random shuffled
+    order, pass 1 (if any) in the *exact reverse* of pass 0's order (a deliberate
+    opposite-direction pass against backlash, rather than hoping a second random shuffle
+    happens to differ), further passes freshly reshuffled. shoulder_pan/wrist_roll stay at
+    `ref` (home); wrist_flex is still derived via `safe_pose()` as everywhere else in this
+    script.
+    """
+    grid = _build_sl_ef_grid(n_sl, n_ef)
+    order = list(rng.permutation(len(grid)))
+    for i in range(n_passes):
+        if i == 1:
+            order = list(reversed(order))
+        elif i > 1:
+            order = list(rng.permutation(len(grid)))
+        for idx in order:
+            sl, ef = grid[idx]
+            speed = float(rng.uniform(SLOW_SPEED, FAST_SPEED))
+            target_pose = safe_pose(ref["pan"], sl, ef, 0.0, ref["roll"])
+            pose = _move_and_dwell(robot, log, pose, target_pose, speed, dwell_sec)
+            if time.perf_counter() > end_time:
+                return pose
+    return pose
+
+
+def collect(
+    robot: OmxFollower,
+    log: FreeMotionLogger,
+    duration_min: float,
+    dwell_sec: float = 0.0,
+    grid_sl_points: int = 6,
+    grid_ef_points: int = 5,
+    grid_passes: int = 2,
+) -> None:
     rng = np.random.default_rng()
     home_pan = HOME_POSE["shoulder_pan.pos"]
     home_sl = HOME_POSE["shoulder_lift.pos"]
@@ -219,7 +334,7 @@ def collect(robot: OmxFollower, log: FreeMotionLogger, duration_min: float) -> N
                 target = dict(ref)
                 target[key] = target_val
                 target_pose = safe_pose(target["pan"], target["sl"], target["ef"], 0.0, target["roll"])
-                pose = _move_and_log(robot, log, pose, target_pose, speed)
+                pose = _move_and_dwell(robot, log, pose, target_pose, speed, dwell_sec)
         if time.perf_counter() > end_time:
             return
 
@@ -227,7 +342,17 @@ def collect(robot: OmxFollower, log: FreeMotionLogger, duration_min: float) -> N
     for speed in (SLOW_SPEED, FAST_SPEED):
         for jitter in (*WRIST_FLEX_JITTER_RANGE, 0.0):
             target_pose = safe_pose(ref["pan"], ref["sl"], ref["ef"], jitter, ref["roll"])
-            pose = _move_and_log(robot, log, pose, target_pose, speed)
+            pose = _move_and_dwell(robot, log, pose, target_pose, speed, dwell_sec)
+    if time.perf_counter() > end_time:
+        return
+
+    logger.info(
+        f"Phase A2: shoulder_lift x elbow_flex grid sweep "
+        f"({grid_sl_points}x{grid_ef_points} points, {grid_passes} passes)..."
+    )
+    pose = _sl_ef_grid_sweep(
+        robot, log, pose, ref, rng, grid_sl_points, grid_ef_points, grid_passes, dwell_sec, end_time
+    )
     if time.perf_counter() > end_time:
         return
 
@@ -241,7 +366,7 @@ def collect(robot: OmxFollower, log: FreeMotionLogger, duration_min: float) -> N
         roll = float(rng.uniform(*WRIST_ROLL_RANGE))
         target_pose = safe_pose(pan, sl, ef, jitter, roll)
         speed = float(rng.uniform(SLOW_SPEED, FAST_SPEED))
-        pose = _move_and_log(robot, log, pose, target_pose, speed)
+        pose = _move_and_dwell(robot, log, pose, target_pose, speed, dwell_sec)
 
 
 def main():
@@ -252,11 +377,38 @@ def main():
     parser.add_argument("--robot_id", default="omx_follower")
     parser.add_argument("--output", required=True, help="Output .npz path for the logged episode")
     parser.add_argument(
-        "--duration_min", type=float, default=12.0, help="Target collection duration (minutes)"
+        "--duration_min", type=float, default=15.0, help="Target collection duration (minutes)"
+    )
+    parser.add_argument(
+        "--dwell_sec",
+        type=float,
+        default=1.0,
+        help=(
+            "Seconds to hold still (still logging) after each move, across all phases. Should "
+            "exceed train_next.py's --history-length / --resample-hz (default 50/100.0 = 0.5s) "
+            "with margin, or dwelling contributes no fully-static training windows."
+        ),
+    )
+    parser.add_argument(
+        "--grid_sl_points", type=int, default=6, help="Phase A2: shoulder_lift grid points"
+    )
+    parser.add_argument("--grid_ef_points", type=int, default=5, help="Phase A2: elbow_flex grid points")
+    parser.add_argument(
+        "--grid_passes",
+        type=int,
+        default=2,
+        help="Phase A2: traversal passes (pass 2 is the exact reverse of pass 1, for backlash)",
     )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    if 0 < args.dwell_sec * LOOP_HZ < 50:
+        logger.warning(
+            f"--dwell_sec {args.dwell_sec} is shorter than train_next.py's default "
+            "--history-length 50 @ --resample-hz 100.0 (0.5s) -- dwell periods may not "
+            "contribute any fully-static training windows. Consider >= 1.0s."
+        )
 
     robot = OmxFollower(OmxFollowerConfig(port=args.port, id=args.robot_id))
     robot.connect(calibrate=True)
@@ -267,7 +419,15 @@ def main():
         start_pose = {j: obs[f"{j}.pos"] for j in ARM_JOINTS}
         home_pose = {j: HOME_POSE[f"{j}.pos"] for j in ARM_JOINTS}
         _move_and_log(robot, log, start_pose, home_pose, SLOW_SPEED)
-        collect(robot, log, args.duration_min)
+        collect(
+            robot,
+            log,
+            args.duration_min,
+            dwell_sec=args.dwell_sec,
+            grid_sl_points=args.grid_sl_points,
+            grid_ef_points=args.grid_ef_points,
+            grid_passes=args.grid_passes,
+        )
     except MotorStallError:
         logger.exception("Aborting: motor overload protection tripped.")
     finally:
