@@ -46,6 +46,24 @@ wherever `Present_Position` was at that instant), reconnecting after an object i
 would likely weaken the grip -- it stops trying to close past the object and just holds the
 current width instead. Keeping teleoperation and logging in one connection avoids ever
 reconnecting after the grasp is established.
+
+Paired unloaded/loaded logging (`--output_loaded`), to eliminate pose drift between an A/B pair
+entirely (see `compare_pose_drift.py`: two separate `collect_static_hold` runs, even both using
+`--leader_port`, do NOT reliably land on the same pose -- each is an independent teleop session):
+    python -m examples.omx.force_sensing.collect_static_hold \\
+        --port /dev/ttyACM0 --leader_port /dev/ttyACM1 \\
+        --duration_sec 15 --output data/omx_static_hold/pose1_unloaded.npz \\
+        --output_loaded data/omx_static_hold/pose1_loaded.npz
+Requires `--leader_port`. Teleoperate into position (gripper empty) and Ctrl+C to pin the pose,
+exactly as above; this pinned pose (the 5 arm joints only) is then held FIXED -- re-sent
+unchanged, never re-read -- through both phases below, so the two logs share the identical
+commanded pose by construction:
+    1. Hold-and-log immediately with nothing grasped -> saved to `--output`.
+    2. Switch to a gripper-only relay: the arm keeps holding the same pinned pose while the
+       leader's gripper command is relayed live, so you can bring the test mass up to the
+       (stationary) gripper and close it via the leader -- your hand only ever touches the test
+       mass, never the arm or gripper. Ctrl+C once the grasp is set.
+    3. Hold-and-log again at the same pinned pose (grasp now closed) -> saved to `--output_loaded`.
 """
 
 import argparse
@@ -75,6 +93,28 @@ def _teleop_relay_until_interrupt(leader: OmxLeader, robot: OmxFollower, hz: flo
         while True:
             loop_start = time.perf_counter()
             robot.send_action(leader.get_action())
+            precise_sleep(max(0.0, dt - (time.perf_counter() - loop_start)))
+    except KeyboardInterrupt:
+        print()
+
+
+def _gripper_only_relay_until_interrupt(
+    leader: OmxLeader, robot: OmxFollower, hold_pose: dict[str, float], hz: float
+) -> None:
+    """Like `_teleop_relay_until_interrupt()`, but only the leader's gripper command is relayed --
+    the 5 arm joints keep re-sending the same `hold_pose` dict passed in (never re-read), so the
+    arm cannot drift while you grasp the test mass. Lets an unloaded/loaded pair share the exact
+    same commanded arm pose instead of relying on two separate teleop sessions landing on the
+    same pose (which `compare_pose_drift.py` showed is not reliable).
+    """
+    print("Bring the test mass up to the (stationary) gripper and close it via the leader. Press Ctrl+C when the grasp is set.")
+    dt = 1.0 / hz
+    try:
+        while True:
+            loop_start = time.perf_counter()
+            action = {f"{j}.pos": v for j, v in hold_pose.items()}
+            action["gripper.pos"] = leader.get_action()["gripper.pos"]
+            robot.send_action(action)
             precise_sleep(max(0.0, dt - (time.perf_counter() - loop_start)))
     except KeyboardInterrupt:
         print()
@@ -117,9 +157,22 @@ def main():
     )
     parser.add_argument("--leader_id", default="omx_leader")
     parser.add_argument("--teleop_hz", type=float, default=50.0)
+    parser.add_argument(
+        "--output_loaded",
+        default=None,
+        help=(
+            "If set, logs a paired unloaded/loaded A/B hold in one continuous connection at the "
+            "SAME pinned pose: --output gets the unloaded hold, then a gripper-only teleop relay "
+            "lets you grasp the test mass without moving the arm, then this path gets the loaded "
+            "hold. Requires --leader_port."
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    if args.output_loaded is not None and args.leader_port is None:
+        parser.error("--output_loaded requires --leader_port (the gripper-only relay phase needs the leader).")
 
     robot = OmxFollower(OmxFollowerConfig(port=args.port, id=args.robot_id))
     robot.connect(calibrate=True)
@@ -130,6 +183,7 @@ def main():
         leader.connect(calibrate=True)
 
     log = FreeMotionLogger()
+    log_loaded = FreeMotionLogger() if args.output_loaded is not None else None
     try:
         if leader is not None:
             _teleop_relay_until_interrupt(leader, robot, args.teleop_hz)
@@ -137,6 +191,10 @@ def main():
         hold_pose = {j: obs[f"{j}.pos"] for j in ARM_JOINTS}
         print(f"Holding current pose for {args.duration_sec}s (Ctrl+C to stop early).")
         hold_and_log(robot, log, hold_pose, args.duration_sec, args.hz)
+        if log_loaded is not None:
+            _gripper_only_relay_until_interrupt(leader, robot, hold_pose, args.teleop_hz)
+            print(f"Holding same pose for {args.duration_sec}s (Ctrl+C to stop early).")
+            hold_and_log(robot, log_loaded, hold_pose, args.duration_sec, args.hz)
     except MotorStallError:
         logger.exception("Aborting: motor overload protection tripped.")
     except KeyboardInterrupt:
@@ -148,7 +206,12 @@ def main():
         if len(log.t) > 0:
             log.save(Path(args.output))
         else:
-            logger.warning("No samples were logged; nothing saved.")
+            logger.warning("No samples were logged for --output; nothing saved.")
+        if log_loaded is not None:
+            if len(log_loaded.t) > 0:
+                log_loaded.save(Path(args.output_loaded))
+            else:
+                logger.warning("No samples were logged for --output_loaded; nothing saved.")
 
 
 if __name__ == "__main__":
