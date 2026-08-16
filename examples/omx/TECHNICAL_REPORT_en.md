@@ -503,6 +503,89 @@ uv run python -m examples.omx.force_sensing.evaluate_dataset_force \
     --repo_id <hf_username>/omx_bilateral_force --root data/omx_bilateral_force
 ```
 
+### Step 7: Post-Retraining Quality Verification and Tuning
+
+After retraining NEXT in Step 2, this workflow quantitatively checks whether accuracy actually improved. Naively comparing `evaluate_free_motion.py`'s noise-floor `mean`/`std` alone can be misleading if the test pose itself was not reproduced identically between the two collections (§2.7, pose-dependent bias). Follow the steps below in order.
+
+**7.1 Check the training data's q-space coverage**
+
+Whenever free-motion logs are added or replaced, first check whether the training data actually covers the pose(s) you want to validate against — especially the `shoulder_lift` × `elbow_flex` combination, the joint pair the pose-dependent bias concentrates in.
+
+```bash
+uv run python -m examples.omx.force_sensing.check_training_coverage \
+    --data data/omx_free_motion/*.npz \
+    --bins 20 \
+    --reference data/omx_static_hold/pose1_unloaded.npz \
+    --tolerance 5.0
+```
+
+**Check**: no `<-- EMPTY` / `<-- sparse` flags in the per-joint histograms. If `--reference` is given and the `shoulder_lift & elbow_flex jointly` count is near zero, that test pose is an unlearned (extrapolated) region for the model, and `tau_ext` there tends to be unstable across checkpoints. Treat comparisons at uncovered poses as inconclusive.
+
+**7.2 Collect a pinned-pose unloaded/loaded pair**
+
+`tau_ext` has a known pose-dependent bias, so even a few degrees of pose mismatch between an unloaded and loaded recording alone produces a `tau_ext` difference indistinguishable from a real load-detection signal. To avoid this, `collect_static_hold.py`'s `--output_loaded` pins the arm's commanded pose to a single fixed value for the entire connection, and grasps the test mass via a gripper-only teleop relay in between.
+
+```bash
+uv run python -m examples.omx.force_sensing.collect_static_hold \
+    --port /dev/ttyACM0 --leader_port /dev/ttyACM1 \
+    --duration_sec 15 --output data/omx_static_hold/pose1_unloaded.npz \
+    --output_loaded data/omx_static_hold/pose1_loaded.npz
+```
+
+Teleoperate the arm into position, Ctrl+C to pin the pose → log unloaded for 15s → per the prompt, grasp the test mass via the leader's gripper only (the 5 arm-joint targets never change) → Ctrl+C → log loaded for 15s at the same pinned pose. Your hand never touches the arm or gripper.
+
+**Check**: verify afterward that the pose really was pinned.
+
+```bash
+uv run python -m examples.omx.force_sensing.compare_pose_drift \
+    --unloaded data/omx_static_hold/pose1_unloaded.npz \
+    --loaded   data/omx_static_hold/pose1_loaded.npz
+```
+
+Confirm `shoulder_pan`'s (a joint with no coupling to the load) ratio is near zero. A large value there means the pose was likely positioned by hand without `--leader_port`, or the pair came from two separate teleop sessions — the subsequent τ_ext comparison cannot be trusted. A high ratio on a load-bearing joint like `wrist_flex` is not itself a problem if the delta's sign is consistent across repeats (e.g. same direction across 9 pairs) — that is more likely real servo sag under load than a data-collection artifact.
+
+**7.3 Quantitatively compare τ_ext (old checkpoint vs. new checkpoint)**
+
+For a pinned-pose pair confirmed above, run `evaluate_free_motion.py` against both the old and new checkpoint.
+
+```bash
+uv run python -m examples.omx.force_sensing.evaluate_free_motion \
+    --checkpoint checkpoints/omx_next.pt --data data/omx_static_hold/pose1_unloaded.npz
+uv run python -m examples.omx.force_sensing.evaluate_free_motion \
+    --checkpoint checkpoints/omx_next.pt --data data/omx_static_hold/pose1_loaded.npz
+```
+
+Repeat against the retrained checkpoint (e.g. `checkpoints/omx_next2.pt`) on the same logs, and compare each joint's `mean` delta (loaded − unloaded) between the two checkpoints. If you collected multiple poses/repeats, compute delta's mean and std per pose across repeats, and check whether the sign is consistent (a small std relative to the mean).
+
+**Check**:
+- A joint/pose combination is a plausible load-detection candidate when the delta's sign is consistent across repeats and its std is small relative to its mean.
+- If the new checkpoint's delta consistency improved, retraining helped. If it did not improve, or got worse at another pose, go back to 7.1 and re-check whether that pose is actually covered by the training data — behavior changes at uncovered poses usually reflect extrapolation noise, not genuine generalization improvement.
+
+**Note: detailed per-joint pose-dependent bias diagnosis**
+
+To see which joint/pose region carries the largest bias in `tau_ext`'s noise floor, bucket the free-motion logs themselves by pose bin.
+
+```bash
+uv run python -m examples.omx.force_sensing.evaluate_pose_dependence \
+    --checkpoint checkpoints/omx_next.pt \
+    --data data/omx_free_motion/*.npz \
+    --bins 5 --qdot_threshold 2.0
+```
+
+`--qdot_threshold` restricts each joint's bins to samples where that joint's own velocity is low (near-static), making it easier to separate in-motion noise from a static systematic bias.
+
+**7.4 Improving training-data coverage: teleoperated free-motion collection**
+
+If 7.1 reveals a coverage gap — especially around poses the real task actually visits often — collecting motion that resembles the real task directly is usually more practical than widening `collect_free_motion.py`'s scripted sweep ranges (widening a sweep to reach poses the real task never uses, or the sweep still can't reach, doesn't translate into better accuracy). Leave the robot's motion entirely to the operator and log while teleoperating with an empty gripper (contact-free).
+
+```bash
+uv run python -m examples.omx.force_sensing.collect_free_motion_teleop \
+    --port /dev/ttyACM0 --leader_port /dev/ttyACM1 \
+    --output data/omx_free_motion/teleop_run1.npz
+```
+
+Move naturally around the poses the real task visits often (e.g. near the home position) with an empty gripper, then Ctrl+C to stop and save. Add the collected log to the existing free-motion logs, redo Step 2 (retraining), and re-check the improvement via 7.1–7.3.
+
 ---
 
 ## 5. Command Reference
@@ -545,6 +628,59 @@ uv run python -m examples.omx.force_sensing.evaluate_dataset_force \
 |---|---|---|---|
 | `--checkpoint` | str | required | NEXT checkpoint path |
 | `--data` | str+ | required | `.npz` log(s) to evaluate |
+
+### `force_sensing/evaluate_pose_dependence.py`
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `--checkpoint` | str | required | NEXT checkpoint path |
+| `--data` | str+ | required | `.npz` log(s) to evaluate |
+| `--bins` | int | `5` | Quantile bins per joint |
+| `--qdot_threshold` | float | `None` | If set, only include samples where that joint's own `\|qdot\|` is below this value |
+
+### `force_sensing/collect_free_motion_teleop.py`
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `--port` | str | `/dev/ttyACM0` | Follower connection port |
+| `--robot_id` | str | `omx_follower` | Follower ID |
+| `--leader_port` | str | required | Leader connection port (required — this script is teleop-driven) |
+| `--leader_id` | str | `omx_leader` | Leader ID |
+| `--output` | str | required | Output `.npz` path |
+| `--hz` | float | `100.0` | Control loop rate |
+| `--duration_sec` | float | `None` | If set, stop automatically after this many seconds (default: run until Ctrl+C) |
+
+### `force_sensing/collect_static_hold.py`
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `--port` | str | `/dev/ttyACM0` | Follower connection port |
+| `--robot_id` | str | `omx_follower` | Follower ID |
+| `--output` | str | required | Output `.npz` path (the unloaded side, when `--output_loaded` is also given) |
+| `--duration_sec` | float | `15.0` | Hold-and-log duration (seconds) |
+| `--hz` | float | `100.0` | Control loop rate |
+| `--leader_port` | str | `None` | If set, connects a leader for teleoperated positioning/grasping |
+| `--leader_id` | str | `omx_leader` | Leader ID |
+| `--teleop_hz` | float | `50.0` | Teleop relay rate |
+| `--output_loaded` | str | `None` | If set, logs a paired unloaded → (gripper-only relay to add the load) → loaded sequence in one continuous connection, saving the loaded side here (requires `--leader_port`) |
+
+### `force_sensing/compare_pose_drift.py`
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `--unloaded` | str+ | required | Unloaded `.npz` paths (paired by position with `--loaded`) |
+| `--loaded` | str+ | required | Loaded `.npz` paths (same count/order as `--unloaded`) |
+| `--labels` | str+ | `None` | Per-pair label (default: `--unloaded`'s filename with `_unloaded` stripped) |
+| `--flag_ratio` | float | `3.0` | Ratio above which a joint is flagged as a likely pose mismatch |
+
+### `force_sensing/check_training_coverage.py`
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `--data` | str+ | required | Training free-motion `.npz` log(s) |
+| `--bins` | int | `20` | Histogram bins per joint |
+| `--reference` | str+ | `None` | If set, checks coverage against `collect_static_hold.py`-style log(s) |
+| `--tolerance` | float | `5.0` | Window (q units) around `--reference` counted as "covered" |
 
 ### `force_sensing/evaluate_dataset_force.py`
 
