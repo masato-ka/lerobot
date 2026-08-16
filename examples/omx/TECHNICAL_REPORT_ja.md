@@ -505,6 +505,89 @@ uv run python -m examples.omx.force_sensing.evaluate_dataset_force \
     --repo_id <hf_username>/omx_bilateral_force --root data/omx_bilateral_force
 ```
 
+### Step 7: チェックポイント学習後の品質確認とチューニング
+
+Step 2でNEXTを再学習した後、精度が実際に改善したかを定量的に確認するためのワークフロー。`evaluate_free_motion.py`のノイズ床（`mean`/`std`）だけを単純比較すると、テスト姿勢そのものが2回の収集で再現できていない場合に誤った結論を導く（§2.7、pose依存バイアス）。以下の順序で確認する。
+
+**7.1 学習データのq空間カバレッジ確認**
+
+自由運動ログを追加・差し替えた場合、まず学習データが実際に検証したい姿勢（特に `shoulder_lift` × `elbow_flex` の組み合わせ、pose依存バイアスが集中する関節ペア）をカバーしているかを確認する。
+
+```bash
+uv run python -m examples.omx.force_sensing.check_training_coverage \
+    --data data/omx_free_motion/*.npz \
+    --bins 20 \
+    --reference data/omx_static_hold/pose1_unloaded.npz \
+    --tolerance 5.0
+```
+
+**確認事項**: 各関節のヒストグラムに `<-- EMPTY` / `<-- sparse` 表示がないか。`--reference` を指定した場合、`shoulder_lift & elbow_flex jointly` の件数が0に近ければ、そのテスト姿勢はモデルにとって未学習領域（外挿）であり、そこでの `tau_ext` はチェックポイントを変えるたびに不安定になりやすい。カバレッジが無い姿勢での比較結果は参考程度に留める。
+
+**7.2 姿勢を固定した負荷有無のペアログ収集**
+
+`tau_ext` は既知の通りpose依存のバイアスを持つため、無負荷/有負荷ログの実際の姿勢が数度でもズレていると、それだけで `tau_ext` の差分が生じ、負荷検出信号と区別がつかなくなる。これを避けるため、`collect_static_hold.py` の `--output_loaded` でアーム目標値を1つの接続内で完全に固定したまま、テレオペでグリッパのみを操作して負荷を追加する。
+
+```bash
+uv run python -m examples.omx.force_sensing.collect_static_hold \
+    --port /dev/ttyACM0 --leader_port /dev/ttyACM1 \
+    --duration_sec 15 --output data/omx_static_hold/pose1_unloaded.npz \
+    --output_loaded data/omx_static_hold/pose1_loaded.npz
+```
+
+テレオペでアームを目的の姿勢へ動かしCtrl+Cで固定 → 無負荷を15秒ログ → 「テスト対象物をグリッパに持たせてください」の表示に従いグリッパのみリーダーで操作（アーム5関節の目標値は不変のまま） → Ctrl+C → 同じ姿勢のまま有負荷を15秒ログ、の順に進む。人の手がアーム・グリッパに触れることは無い。
+
+**確認事項**: 収集後、姿勢が本当に固定されていたかを検証する。
+
+```bash
+uv run python -m examples.omx.force_sensing.compare_pose_drift \
+    --unloaded data/omx_static_hold/pose1_unloaded.npz \
+    --loaded   data/omx_static_hold/pose1_loaded.npz
+```
+
+`shoulder_pan`（負荷とカップリングしない関節）のratioがゼロに近いことを確認する。ここが大きい場合、`--leader_port` を使わずに人手で位置決めした、あるいは2回の別々のテレオペセッションでログを取った可能性が高く、以降のτ_ext比較は信頼できない。`wrist_flex` など負荷を直接受ける関節のratioが高くても、delta（ペア間の差）の符号が繰り返し間で一貫していれば実際のサーボのたわみである可能性が高く、問題ではない。
+
+**7.3 τ_extの定量比較（旧チェックポイント vs 新チェックポイント）**
+
+姿勢固定が確認できたペアログに対し、新旧チェックポイントそれぞれで `evaluate_free_motion.py` を実行する。
+
+```bash
+uv run python -m examples.omx.force_sensing.evaluate_free_motion \
+    --checkpoint checkpoints/omx_next.pt --data data/omx_static_hold/pose1_unloaded.npz
+uv run python -m examples.omx.force_sensing.evaluate_free_motion \
+    --checkpoint checkpoints/omx_next.pt --data data/omx_static_hold/pose1_loaded.npz
+```
+
+同じログを再学習後のチェックポイント（例: `checkpoints/omx_next2.pt`）に対しても実行し、各関節の `mean` の差分（loaded − unloaded、delta）を新旧チェックポイントで比較する。複数の姿勢・複数回の繰り返しで撮っている場合は、姿勢ごとにdeltaの平均・標準偏差を計算し、符号が繰り返し間で揃っているか（std/mean比が小さいか）を見る。
+
+**確認事項**:
+- deltaの符号が繰り返し間で一貫し、stdがmeanに対して十分小さい関節・姿勢の組み合わせが、実際に負荷を検出できている候補。
+- 新チェックポイントでdeltaの一貫性が改善していれば再学習の効果あり。改善していない、あるいは他の姿勢で悪化している場合は、7.1のカバレッジ確認に戻り、該当姿勢が学習データでカバーされているかを再確認する（カバレッジが無い姿勢での挙動変化は、汎化の改善ではなく外挿のブレであることが多い）。
+
+**補足: 関節ごとのpose依存バイアスの詳細診断**
+
+`tau_ext` のノイズ床がどの関節・どの姿勢域で特に大きいバイアスを持つかを詳しく見たい場合は、自由運動ログそのものを姿勢ビンごとに集計する。
+
+```bash
+uv run python -m examples.omx.force_sensing.evaluate_pose_dependence \
+    --checkpoint checkpoints/omx_next.pt \
+    --data data/omx_free_motion/*.npz \
+    --bins 5 --qdot_threshold 2.0
+```
+
+`--qdot_threshold` を指定すると、その関節が低速（ほぼ静止）な区間のみに絞って集計するため、動作中のノイズと静止時の系統バイアスを分離しやすい。
+
+**7.4 学習データのカバレッジ改善: テレオペによる自由運動収集**
+
+7.1でカバレッジ不足（特に実タスクが頻繁に通る姿勢周辺）が判明した場合、`collect_free_motion.py` のスクリプト化されたスイープ範囲を広げるより、実際のタスクに近い動きを直接収集する方が実用的なことが多い（スイープが到達しない/実タスクでは使わない姿勢まで範囲を広げても、精度向上に直結しない）。ロボットの動きを完全にオペレータへ委ね、接触なしでテレオペしながらログを取る。
+
+```bash
+uv run python -m examples.omx.force_sensing.collect_free_motion_teleop \
+    --port /dev/ttyACM0 --leader_port /dev/ttyACM1 \
+    --output data/omx_free_motion/teleop_run1.npz
+```
+
+グリッパを空にしたまま、実タスクで頻繁に通る姿勢（例: ホームポジション付近）を中心に自然に動かし、Ctrl+Cで停止・保存する。収集したログを既存の自由運動ログに追加してStep 2（再学習）からやり直し、7.1〜7.3で改善を確認する。
+
 ---
 
 ## 5. コマンドリファレンス
@@ -547,6 +630,59 @@ uv run python -m examples.omx.force_sensing.evaluate_dataset_force \
 |---|---|---|---|
 | `--checkpoint` | str | 必須 | NEXTチェックポイントパス |
 | `--data` | str+ | 必須 | 評価対象の `.npz` ログ（複数可） |
+
+### `force_sensing/evaluate_pose_dependence.py`
+
+| 引数 | 型 | 既定値 | 説明 |
+|---|---|---|---|
+| `--checkpoint` | str | 必須 | NEXTチェックポイントパス |
+| `--data` | str+ | 必須 | 評価対象の `.npz` ログ（複数可） |
+| `--bins` | int | `5` | 関節ごとのquantileビン数 |
+| `--qdot_threshold` | float | `None` | 指定時、その関節の `\|qdot\|` がこの値未満のサンプルのみに絞って集計 |
+
+### `force_sensing/collect_free_motion_teleop.py`
+
+| 引数 | 型 | 既定値 | 説明 |
+|---|---|---|---|
+| `--port` | str | `/dev/ttyACM0` | フォロワー接続ポート |
+| `--robot_id` | str | `omx_follower` | フォロワーID |
+| `--leader_port` | str | 必須 | リーダー接続ポート（このスクリプトはテレオペ駆動のため必須） |
+| `--leader_id` | str | `omx_leader` | リーダーID |
+| `--output` | str | 必須 | 出力 `.npz` パス |
+| `--hz` | float | `100.0` | 制御ループ周波数 |
+| `--duration_sec` | float | `None` | 指定時この秒数で自動停止（既定はCtrl+Cまで継続） |
+
+### `force_sensing/collect_static_hold.py`
+
+| 引数 | 型 | 既定値 | 説明 |
+|---|---|---|---|
+| `--port` | str | `/dev/ttyACM0` | フォロワー接続ポート |
+| `--robot_id` | str | `omx_follower` | フォロワーID |
+| `--output` | str | 必須 | 出力 `.npz` パス（`--output_loaded` 指定時は無負荷側） |
+| `--duration_sec` | float | `15.0` | 保持・ログ時間（秒） |
+| `--hz` | float | `100.0` | 制御ループ周波数 |
+| `--leader_port` | str | `None` | 指定時、リーダーを接続しテレオペで位置決め・把持を行う |
+| `--leader_id` | str | `omx_leader` | リーダーID |
+| `--teleop_hz` | float | `50.0` | テレオペ中継の周波数 |
+| `--output_loaded` | str | `None` | 指定時、同一接続内で無負荷→（グリッパのみリレーで負荷追加）→有負荷の2フェーズを記録し、こちらのパスへ有負荷側を保存（`--leader_port` 必須） |
+
+### `force_sensing/compare_pose_drift.py`
+
+| 引数 | 型 | 既定値 | 説明 |
+|---|---|---|---|
+| `--unloaded` | str+ | 必須 | 無負荷 `.npz` パス（`--loaded` と順序でペアリング） |
+| `--loaded` | str+ | 必須 | 有負荷 `.npz` パス（`--unloaded` と同数・同順） |
+| `--labels` | str+ | `None` | ペアごとのラベル（既定: `--unloaded` のファイル名から `_unloaded` を除いたもの） |
+| `--flag_ratio` | float | `3.0` | このratioを超えると「姿勢ミスマッチの疑い」としてフラグ表示 |
+
+### `force_sensing/check_training_coverage.py`
+
+| 引数 | 型 | 既定値 | 説明 |
+|---|---|---|---|
+| `--data` | str+ | 必須 | 学習用自由運動 `.npz` ログ（複数可） |
+| `--bins` | int | `20` | 関節ごとのヒストグラムビン数 |
+| `--reference` | str+ | `None` | 指定時、`collect_static_hold.py` 等のログをカバレッジ確認対象として追加 |
+| `--tolerance` | float | `5.0` | `--reference` 周辺を「カバー済み」とみなす範囲（q単位） |
 
 ### `force_sensing/evaluate_dataset_force.py`
 
