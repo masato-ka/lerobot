@@ -69,6 +69,7 @@ class OmxFollower(Robot):
         if self._force_estimation_enabled:
             self._force_estimator = OnlineExternalTorqueEstimator(
                 config.force_estimation.checkpoint_path,
+                device=config.force_estimation.device,
                 smoothing_alpha=config.force_estimation.smoothing_alpha,
             )
         # Populated by `send_action()`; used as the force estimator's `goal_q` input so record-time and
