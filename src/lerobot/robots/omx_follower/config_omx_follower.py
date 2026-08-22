@@ -34,6 +34,14 @@ class OmxFollowerForceEstimationConfig:
     # Optional EMA smoothing on the returned tau_ext -- see `OnlineExternalTorqueEstimator`'s docstring.
     smoothing_alpha: float | None = None
 
+    # Torch device for the NEXT estimator's forward pass. `None` (the default) auto-selects cuda if
+    # available, else cpu -- same as `OnlineExternalTorqueEstimator`'s own default, and independent of
+    # whatever device the main policy runs on. Force this to `"cpu"` to rule out GPU contention/kernel-
+    # launch overhead as a real-time control-loop bottleneck: this is a sub-1M-parameter model run once
+    # per tick, so CPU inference is often *faster* in wall-clock terms than a GPU call once launch/sync
+    # overhead and contention with a concurrently-running policy are accounted for.
+    device: str | None = None
+
 
 @RobotConfig.register_subclass("omx_follower")
 @dataclass

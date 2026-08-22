@@ -150,7 +150,12 @@ class OnlineExternalTorqueEstimator:
             [current[j] for j in self.joint_names], device=self.device, dtype=torch.float32
         )
         tau_ext = current_arr - pred_free_space
-        raw = {joint: float(tau_ext[i]) for i, joint in enumerate(self.joint_names)}
+        # One batched CPU transfer instead of N per-element float()/.item() calls -- each of those
+        # forces its own CUDA synchronization when self.device is a GPU, which is significant relative
+        # to this model's tiny forward-pass cost when called once per real-time control tick (see
+        # OmxFollower's force_estimation integration).
+        tau_ext_list = tau_ext.detach().cpu().tolist()
+        raw = {joint: tau_ext_list[i] for i, joint in enumerate(self.joint_names)}
         if self.smoothing_alpha is None:
             return raw
 
