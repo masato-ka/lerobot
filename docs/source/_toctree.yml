@@ -27,6 +27,8 @@
     title: Training with PEFT (e.g., LoRA)
   - local: rename_map
     title: Using Rename Map and Empty Cameras
+  - local: omx_bilateral
+    title: OMX Bilateral Force Feedback
   title: "Tutorials"
 - sections:
   - local: hardware_guide
