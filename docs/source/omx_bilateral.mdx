@@ -1,0 +1,191 @@
+# OMX Bilateral Force Feedback
+
+This tutorial adds bilateral force-feedback teleoperation to the OMX arm: the follower's estimated external contact force is fed back to the leader as haptic feedback, and can be recorded alongside your demonstrations so a policy learns from force, not just vision and position.
+
+This reproduces **NEXT (Neural External Torque Estimation)** from [FACTR2](https://arxiv.org/abs/2606.12406) on OMX, a 5-DOF arm with no dedicated force/torque sensor: external force is estimated purely from the motors' own current/load readings.
+
+## Overview
+
+Before starting, complete the base [OMX](./omx) setup (assembly, installation, port/udev configuration) — this tutorial assumes both a follower and a leader arm are already teleoperating in plain position mode.
+
+You will additionally need:
+
+```bash
+pip install -e ".[kinematics]"
+```
+
+The `kinematics` extra installs [Pinocchio](https://github.com/stack-of-tasks/pinocchio), used for gravity compensation on the leader arm via RNEA. You'll also need a copy of the leader arm's URDF (`omx_l.urdf`), available from [ROBOTIS's `open_manipulator` repository](https://github.com/ROBOTIS-GIT/open_manipulator).
+
+For the full theory, implementation details, and a from-scratch command reference, see the accompanying technical report: [`examples/omx/TECHNICAL_REPORT_en.md`](https://github.com/huggingface/lerobot/blob/main/examples/omx/TECHNICAL_REPORT_en.md) ([日本語版](https://github.com/huggingface/lerobot/blob/main/examples/omx/TECHNICAL_REPORT_ja.md)). This page walks through the same pipeline at the level of detail of a standard LeRobot tutorial; the report is the place to go for tuning, known limitations, and the reasoning behind each design choice.
+
+## Background
+
+**NEXT** estimates external torque as the residual between the motors' actually-measured current/load and what a small learned model predicts they *should* read in free space (no contact), given the recent history of position, velocity, and tracking error: `tau_ext = tau_m - f_theta(x)`. The free-space model `f_theta` is an LSTM+MLP trained purely on contact-free motion — no force sensor is ever involved, at training or inference time.
+
+**Gravity compensation** on the leader arm uses the same URDF through Pinocchio's RNEA algorithm to compute the torque needed to hold the arm's own weight at any pose, so the leader feels weightless during teleoperation instead of needing to be held up.
+
+**Bilateral force feedback** closes the loop: at every control tick, the follower's NEXT estimate is combined with the leader's own gravity-compensation, joint-limit, and damping terms into a single current command written to the leader's motors — so pushing on the follower's end-effector is felt on the leader as resistance.
+
+## Create the NEXT Model
+
+### Collect free-motion data
+
+With the workspace clear of any objects, move the follower through its range of motion with nothing touching it, so the model learns what "no external force" looks like:
+
+```bash
+uv run python -m examples.omx.force_sensing.collect_free_motion \
+    --port <your_follower_port> --robot_id omx_follower_arm \
+    --output data/omx_free_motion/run1.npz --duration_min 12
+```
+
+You can split this across multiple sessions and concatenate the logs at training time. **Check**: watch the console for any interruption due to `Hardware_Error_Status` during collection.
+
+### Train the model
+
+```bash
+uv run python -m examples.omx.force_sensing.train_next \
+    --data data/omx_free_motion/run1.npz data/omx_free_motion/run2.npz \
+    --output checkpoints/omx_next.pt
+```
+
+**Check**: does the validation loss decrease roughly monotonically until early stopping?
+
+### Validate the model
+
+Replay the training data back through the model — on contact-free data, it should output only noise:
+
+```bash
+uv run python -m examples.omx.force_sensing.evaluate_free_motion \
+    --checkpoint checkpoints/omx_next.pt \
+    --data data/omx_free_motion/run1.npz data/omx_free_motion/run2.npz
+```
+
+**Check**: are the printed `mean`/`std`/`max|.|` small and close to zero? Then confirm the response on real hardware:
+
+```bash
+uv run python -m examples.omx.force_sensing.demo_force_sensing \
+    --port <your_follower_port> --checkpoint checkpoints/omx_next.pt
+```
+
+**Check**: pressing on each joint lightly/firmly, does the printed `tau_ext`'s sign and magnitude qualitatively track the direction/strength of the push?
+
+## Verify Gravity Compensation
+
+First, check the leader's sign/URDF mapping with no current applied:
+
+```bash
+uv run python -m examples.omx.gravity_compensation.preview_gravity_model \
+    --port <your_leader_port> --robot_id omx_leader_arm --urdf_path /path/to/omx_l.urdf
+```
+
+**Check**: as you move the arm by hand, do the displayed angles/torque signs match physical intuition? While you're at it, measure the arm's safe range of motion:
+
+```bash
+uv run python -m examples.omx.gravity_compensation.find_leader_joint_range \
+    --port <your_leader_port> --robot_id omx_leader_arm
+```
+
+Cross-check the printed `JOINT_LIMIT_RANGE` against `src/lerobot/teleoperators/omx_leader/leader_safety.py` and update it for your own physical leader unit if needed. Finally, verify gravity compensation on its own. **Support the arm by hand before starting**:
+
+```bash
+uv run python -m examples.omx.gravity_compensation.gravity_comp_demo \
+    --port <your_leader_port> --robot_id omx_leader_arm --urdf_path /path/to/omx_l.urdf \
+    --modifier 0.09 --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0
+```
+
+**Check**: does the arm hold its own weight when you let go, without falling or oscillating near the joint limits?
+
+## Verify Bilateral Teleoperation
+
+Gravity compensation, the joint-limit/damping safety terms, and force feedback are all built into `omx_leader`/`omx_follower` and work directly through `lerobot-teleoperate` — no extra script needed. Start with `--teleop.force_feedback.feedback_gain` left at its default `0.0` (disabled), to confirm position teleop plus gravity comp alone. **Support the arm by hand the first time.**
+
+```bash
+lerobot-teleoperate \
+    --robot.type=omx_follower --robot.port=<your_follower_port> --robot.id=omx_follower_arm \
+    --teleop.type=omx_leader --teleop.port=<your_leader_port> --teleop.id=omx_leader_arm \
+    --teleop.force_feedback.urdf_path=/path/to/omx_l.urdf \
+    --teleop.force_feedback.modifier=0.09 \
+    --teleop.force_feedback.modifier_overrides='{"shoulder_lift": 0.1, "shoulder_pan": 0.0, "wrist_roll": 0.0}' \
+    --teleop.force_feedback.damping_gain=0.05 --teleop.force_feedback.joint_limit_kp=3 --teleop.force_feedback.joint_limit_kd=0
+```
+
+**Check**: does the follower correctly track the leader's motion (including the gripper)? Once this looks right, add the NEXT checkpoint and enable force feedback:
+
+```bash
+lerobot-teleoperate \
+    --robot.type=omx_follower --robot.port=<your_follower_port> --robot.id=omx_follower_arm \
+    --robot.force_estimation.checkpoint_path=checkpoints/omx_next.pt \
+    --teleop.type=omx_leader --teleop.port=<your_leader_port> --teleop.id=omx_leader_arm \
+    --teleop.force_feedback.urdf_path=/path/to/omx_l.urdf \
+    --teleop.force_feedback.modifier=0.09 \
+    --teleop.force_feedback.modifier_overrides='{"shoulder_lift": 0.1, "shoulder_pan": 0.0, "wrist_roll": 0.0}' \
+    --teleop.force_feedback.damping_gain=0.05 --teleop.force_feedback.joint_limit_kp=3 --teleop.force_feedback.joint_limit_kd=0 \
+    --teleop.force_feedback.feedback_gain=0.3
+```
+
+**Check**: when you push on the follower's end-effector, does the reaction reach the leader side? If it feels reversed, flip the sign of `--teleop.force_feedback.feedback_gain`.
+
+> [!WARNING]
+> Forgetting `--robot.force_estimation.checkpoint_path` leaves the feedback term permanently zero, while gravity comp and the safety terms keep working normally — no error is raised, so this is easy to miss.
+
+Per-joint gain overrides like `--teleop.force_feedback.modifier_overrides` must be a JSON string; draccus doesn't support dotted-key CLI syntax (`...modifier_overrides.shoulder_lift=0.1`) for dict fields.
+
+## Collect a Dataset
+
+Once teleoperation feels right, switch to `lerobot-record` with the same flags plus your usual dataset/camera options. `observation.state` picks up the extra `force.<joint>` dimensions automatically — no separate configuration is needed on the recording side.
+
+```bash
+lerobot-record \
+    --robot.type=omx_follower --robot.port=<your_follower_port> --robot.id=omx_follower_arm \
+    --robot.force_estimation.checkpoint_path=checkpoints/omx_next.pt \
+    --robot.cameras="{ wrist: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}}" \
+    --teleop.type=omx_leader --teleop.port=<your_leader_port> --teleop.id=omx_leader_arm \
+    --teleop.force_feedback.urdf_path=/path/to/omx_l.urdf \
+    --teleop.force_feedback.modifier=0.09 \
+    --teleop.force_feedback.modifier_overrides='{"shoulder_lift": 0.1, "shoulder_pan": 0.0, "wrist_roll": 0.0}' \
+    --teleop.force_feedback.damping_gain=0.05 --teleop.force_feedback.joint_limit_kp=3 --teleop.force_feedback.joint_limit_kd=0 \
+    --teleop.force_feedback.feedback_gain=0.3 \
+    --dataset.repo_id=${HF_USER}/omx_bilateral_force \
+    --dataset.num_episodes=50 --dataset.episode_time_s=30 \
+    --dataset.single_task="Pick up the cube"
+```
+
+**Check**: the log printed right after startup should show `observation.state` with 10 dimensions (5 joint positions + 5 `force.<joint>`), not 5. For general recording options (resuming, keyboard controls, dataset visualization), see [Imitation Learning for Robots](./il_robots#record-a-dataset).
+
+## Train ACT
+
+Force-augmented `observation.state` needs no special handling at training time — a standard [ACT](./act) policy already normalizes and consumes whatever dimensions `observation.state` has:
+
+```bash
+lerobot-train \
+    --dataset.repo_id=${HF_USER}/omx_bilateral_force \
+    --policy.type=act \
+    --output_dir=outputs/train/act_omx_bilateral_force \
+    --job_name=act_omx_bilateral_force \
+    --policy.device=cuda \
+    --wandb.enable=true \
+    --policy.repo_id=${HF_USER}/act_omx_bilateral_force
+```
+
+See [ACT](./act) and [Imitation Learning for Robots](./il_robots#train-a-policy) for training tips, checkpoint resuming, and cloud/Colab training options.
+
+## Run the Policy
+
+`lerobot-rollout` reconstructs the same force-augmented observation the policy was trained on directly from `--robot.force_estimation.checkpoint_path` — no leader, gravity compensation, or force feedback is needed at inference time, since the policy has learned to act from the estimated force alone:
+
+```bash
+lerobot-rollout \
+    --strategy.type=base \
+    --policy.path=${HF_USER}/act_omx_bilateral_force \
+    --robot.type=omx_follower --robot.port=<your_follower_port> --robot.id=omx_follower_arm \
+    --robot.force_estimation.checkpoint_path=checkpoints/omx_next.pt \
+    --robot.cameras="{ wrist: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}}" \
+    --display_data=true \
+    --duration=60
+```
+
+See [Policy Deployment (lerobot-rollout)](./inference) for the full set of strategies and common flags (recording evaluation episodes, DAgger-style human correction, etc.).
+
+## Known Limitations
+
+NEXT reliably detects load differences on the order of 100g or more, but its accuracy is pose-dependent and it is not well suited to discriminating very fine load differences — this is a hardware sensing-resolution limit (the XL430 joints' `Present_Load` register is a coarse estimate, not a true current measurement), not something more training data fixes. See §2.7 and Step 7 of the [technical report](https://github.com/huggingface/lerobot/blob/main/examples/omx/TECHNICAL_REPORT_en.md) if you want to verify or tune this further.
