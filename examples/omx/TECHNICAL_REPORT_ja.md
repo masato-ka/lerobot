@@ -357,13 +357,13 @@ $$
 | `find_leader_joint_range.py` | トルクを切った状態で手動で動かし、各関節の実用可動範囲を計測。 |
 | `gravity_comp_demo.py` | 重力補償 + 関節限界バリア + 減衰のみの単体デモ。バイラテラル系スクリプトの土台。 |
 
-**バイラテラル制御** (`bilateral_teleop/`)
+**バイラテラル制御** (`bilateral_teleop/`) — **非推奨・参照用**: 以下3スクリプトの機能は `OmxFollower.force_estimation`/`OmxLeader.force_feedback`(§2.2)として標準クラスへ統合済みで、`lerobot-teleoperate`/`lerobot-record`/`lerobot-rollout` からそのまま利用できる(Step 5・6参照)。今後の変更は標準CLI側にのみ入る。
 
-| ファイル | 役割 |
-|---|---|
-| `bilateral_teleop_demo.py` | 位置テレオペ + フォースフィードバックの本体ループ。 |
-| `record_bilateral.py` | 上記ループに LeRobotDataset 記録を追加。カメラ・Hub アップロード・`--resume` 対応。 |
-| `rollout_bilateral.py` | リーダー無し・フォロワー単体で学習済みポリシーを自律実行。 |
+| ファイル | 役割 | 標準CLIでの代替 |
+|---|---|---|
+| `bilateral_teleop_demo.py` | 位置テレオペ + フォースフィードバックの本体ループ。 | `lerobot-teleoperate --robot.type=omx_follower --teleop.type=omx_leader ...` |
+| `record_bilateral.py` | 上記ループに LeRobotDataset 記録を追加。カメラ・Hub アップロード・`--resume` 対応。 | `lerobot-record`(同上 + `--dataset.*`) |
+| `rollout_bilateral.py` | リーダー無し・フォロワー単体で学習済みポリシーを自律実行。 | `lerobot-rollout --robot.type=omx_follower --policy.path=... --strategy.type=base` |
 
 **診断スクリプト** (`examples/omx/` 直下)
 
@@ -455,50 +455,57 @@ uv run python -m examples.omx.gravity_compensation.gravity_comp_demo \
 
 ### Step 5: バイラテラルテレオペレーションの動作確認
 
-まず `--feedback_gain` を既定の `0.0`（無効）のまま実行し、位置テレオペ + 安全機構だけの動作を確認する。**初回はアームを手で支えた状態で開始すること。**
+バイラテラル力フィードバックは標準の `OmxFollower`/`OmxLeader` クラスに統合済みで、`lerobot-teleoperate` からそのまま利用できる(§2.2、実機で新旧同等の動作を確認済み)。まず `--teleop.force_feedback.feedback_gain` を既定の `0.0`（無効）のまま実行し、位置テレオペ + 重力補償・安全機構だけの動作を確認する。**初回はアームを手で支えた状態で開始すること。**
 
 ```bash
-uv run python -m examples.omx.bilateral_teleop.bilateral_teleop_demo \
-    --follower_port /dev/ttyACM0 --follower_id omx_follower \
-    --leader_port /dev/ttyACM1 --leader_id omx_leader \
-    --urdf_path /path/to/omx_l.urdf --checkpoint checkpoints/omx_next.pt \
-    --modifier 0.09 --modifier_shoulder_lift 0.1 \
-    --modifier_shoulder_pan 0.0 --modifier_wrist_roll 0.0 \
-    --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0
+lerobot-teleoperate \
+    --robot.type=omx_follower --robot.port=/dev/ttyACM0 \
+    --teleop.type=omx_leader --teleop.port=/dev/ttyACM1 \
+    --teleop.force_feedback.urdf_path=/path/to/omx_l.urdf \
+    --teleop.force_feedback.modifier=0.09 \
+    --teleop.force_feedback.modifier_overrides='{"shoulder_lift": 0.1, "shoulder_pan": 0.0, "wrist_roll": 0.0}' \
+    --teleop.force_feedback.damping_gain=0.05 --teleop.force_feedback.joint_limit_kp=3 --teleop.force_feedback.joint_limit_kd=0
 ```
 
-**確認事項**: コンソールに毎秒表示される実測Hzと `tau_ext` を確認する。フォロワーがリーダーの動きに正しく追従するか（グリッパを含む）を確認する。動作に問題が無ければ、フォースフィードバックを有効にする。
+**確認事項**: フォロワーがリーダーの動きに正しく追従するか（グリッパを含む）を確認する。動作に問題が無ければ、力推定チェックポイントとフォースフィードバックを有効にする。
 
 ```bash
-uv run python -m examples.omx.bilateral_teleop.bilateral_teleop_demo \
-    --follower_port /dev/ttyACM0 --leader_port /dev/ttyACM1 \
-    --urdf_path /path/to/omx_l.urdf --checkpoint checkpoints/omx_next.pt \
-    --modifier 0.09 --modifier_shoulder_lift 0.1 \
-    --modifier_shoulder_pan 0.0 --modifier_wrist_roll 0.0 \
-    --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0 \
-    --feedback_gain 0.3
+lerobot-teleoperate \
+    --robot.type=omx_follower --robot.port=/dev/ttyACM0 \
+    --robot.force_estimation.checkpoint_path=checkpoints/omx_next.pt \
+    --teleop.type=omx_leader --teleop.port=/dev/ttyACM1 \
+    --teleop.force_feedback.urdf_path=/path/to/omx_l.urdf \
+    --teleop.force_feedback.modifier=0.09 \
+    --teleop.force_feedback.modifier_overrides='{"shoulder_lift": 0.1, "shoulder_pan": 0.0, "wrist_roll": 0.0}' \
+    --teleop.force_feedback.damping_gain=0.05 --teleop.force_feedback.joint_limit_kp=3 --teleop.force_feedback.joint_limit_kd=0 \
+    --teleop.force_feedback.feedback_gain=0.3
 ```
 
-**確認事項**: フォロワーの手先を押した際、リーダー側にその反力が伝わるか。反力の向きが逆に感じる場合は `--feedback_gain` の符号を反転する。
+**確認事項**: フォロワーの手先を押した際、リーダー側にその反力が伝わるか。反力の向きが逆に感じる場合は `--teleop.force_feedback.feedback_gain` の符号を反転する。**`--robot.force_estimation.checkpoint_path` を指定し忘れると、フォースフィードバック項が常にゼロになったまま重力補償・安全機構だけが動く**（エラーにはならないので注意)。
+
+`--teleop.force_feedback.modifier_overrides` のような per-joint オーバーライドは、draccusの制約上ドット区切り(`...modifier_overrides.shoulder_lift=0.1`)ではなくJSON文字列で指定する。旧来の `examples/omx/bilateral_teleop/bilateral_teleop_demo.py` は参照用として残しているが、今後の変更は標準CLI側にのみ入る。
 
 ### Step 6: 力情報つきデータセットの記録
 
-動作確認が済んだら、同じパラメータで記録スクリプトに切り替える。
+動作確認が済んだら、同じパラメータで `lerobot-record` に切り替える。`observation.state` への `force.*` 追加は `OmxFollower.observation_features` が自動的に行うため、`lerobot-record` 自体への変更は不要。
 
 ```bash
-uv run python -m examples.omx.bilateral_teleop.record_bilateral \
-    --follower_port /dev/ttyACM0 --leader_port /dev/ttyACM1 \
-    --urdf_path /path/to/omx_l.urdf --checkpoint checkpoints/omx_next.pt \
-    --modifier 0.09 --modifier_shoulder_lift 0.1 \
-    --modifier_shoulder_pan 0.0 --modifier_wrist_roll 0.0 \
-    --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0 --feedback_gain 0.3 \
-    --repo_id <hf_username>/omx_bilateral_force --root data/omx_bilateral_force \
-    --num_episodes 10 --episode_duration_s 30 --single_task "Pick up the cube" \
-    --cameras="{ wrist: {type: opencv, index_or_path: 6, width: 640, height: 480, fps: 30, fourcc: MJPG} }" \
-    --push_to_hub --hub_private --hub_tags omx bilateral force
+lerobot-record \
+    --robot.type=omx_follower --robot.port=/dev/ttyACM0 \
+    --robot.force_estimation.checkpoint_path=checkpoints/omx_next.pt \
+    --robot.cameras="{ wrist: {type: opencv, index_or_path: 6, width: 640, height: 480, fps: 30, fourcc: MJPG} }" \
+    --teleop.type=omx_leader --teleop.port=/dev/ttyACM1 \
+    --teleop.force_feedback.urdf_path=/path/to/omx_l.urdf \
+    --teleop.force_feedback.modifier=0.09 \
+    --teleop.force_feedback.modifier_overrides='{"shoulder_lift": 0.1, "shoulder_pan": 0.0, "wrist_roll": 0.0}' \
+    --teleop.force_feedback.damping_gain=0.05 --teleop.force_feedback.joint_limit_kp=3 --teleop.force_feedback.joint_limit_kd=0 \
+    --teleop.force_feedback.feedback_gain=0.3 \
+    --dataset.repo_id=<hf_username>/omx_bilateral_force --dataset.root=data/omx_bilateral_force \
+    --dataset.num_episodes=10 --dataset.episode_time_s=30 --dataset.single_task="Pick up the cube" \
+    --dataset.push_to_hub=true --dataset.private=true --dataset.tags="[omx, bilateral, force]"
 ```
 
-**確認事項**: 起動直後のログに表示される `observation.state` の次元数・`names`（位置5 + `force.*` 5 = 10次元になっているか）を確認する。エピソードの続きから記録する場合は `--resume`（`--root` の指定が必須）を追加する。
+**確認事項**: 起動直後のログに表示される `observation.state` の次元数・`names`（位置5 + `force.*` 5 = 10次元になっているか）を確認する。エピソードの続きから記録する場合は `--resume`（`--dataset.root` の指定が必須）を追加する。旧来の `examples/omx/bilateral_teleop/record_bilateral.py` は参照用として残している。
 
 **補足（データ品質のチューニングが必要な場合）**: 記録したデータセットの `force.*` 列の分布を確認したい場合は、以下で診断できる（§2.2・§2.7、および `src/lerobot/force_estimation/README.md` の「チューニング」節も参照）。
 
@@ -728,6 +735,8 @@ uv run python -m examples.omx.force_sensing.collect_free_motion_teleop \
 
 ### `bilateral_teleop/bilateral_teleop_demo.py`
 
+**非推奨・参照用**。標準の `lerobot-teleoperate --robot.type=omx_follower --teleop.type=omx_leader --teleop.force_feedback....` を使うこと(Step 5参照)。以下は当スクリプト自身の引数一覧(変更なし)。
+
 | 引数 | 型 | 既定値 | 説明 |
 |---|---|---|---|
 | `--follower_port` | str | `/dev/ttyACM0` | フォロワー接続ポート |
@@ -745,7 +754,7 @@ uv run python -m examples.omx.force_sensing.collect_free_motion_teleop \
 
 ### `bilateral_teleop/record_bilateral.py`
 
-上記 `bilateral_teleop_demo.py` の全引数に加えて:
+**非推奨・参照用**。標準の `lerobot-record --robot.type=omx_follower --robot.force_estimation.checkpoint_path=... --teleop.type=omx_leader --teleop.force_feedback.... --dataset.*` を使うこと(Step 6参照)。以下は当スクリプト自身の引数一覧(変更なし)。上記 `bilateral_teleop_demo.py` の全引数に加えて:
 
 | 引数 | 型 | 既定値 | 説明 |
 |---|---|---|---|
@@ -763,6 +772,8 @@ uv run python -m examples.omx.force_sensing.collect_free_motion_teleop \
 | `--hub_tags` | str+ | `None` | Hubデータセットカードのタグ（`--push_to_hub` と併用） |
 
 ### `bilateral_teleop/rollout_bilateral.py`
+
+**非推奨・参照用**。標準の `lerobot-rollout --robot.type=omx_follower --robot.force_estimation.checkpoint_path=... --policy.path=... --strategy.type=base` を使うこと(`rollout/context.py`のフィルタが `force.*` を通すよう拡張済み)。以下は当スクリプト自身の引数一覧(変更なし)。
 
 | 引数 | 型 | 既定値 | 説明 |
 |---|---|---|---|

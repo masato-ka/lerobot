@@ -355,13 +355,13 @@ Existing classes (`OmxFollower`/`OmxLeader`) are left unmodified; everything her
 | `find_leader_joint_range.py` | Manually moves the (torque-off) arm to measure each joint's practical range of motion. |
 | `gravity_comp_demo.py` | Standalone demo of gravity compensation + joint-limit barrier + damping only. The foundation for the bilateral scripts. |
 
-**Bilateral control** (`bilateral_teleop/`)
+**Bilateral control** (`bilateral_teleop/`) — **deprecated, kept for reference**: the functionality of these 3 scripts is now integrated into the standard classes as `OmxFollower.force_estimation`/`OmxLeader.force_feedback` (§2.2), usable directly through `lerobot-teleoperate`/`lerobot-record`/`lerobot-rollout` (see Steps 5-6). Future changes land only on the standard CLI path.
 
-| File | Role |
-|---|---|
-| `bilateral_teleop_demo.py` | The main loop for position teleop + force feedback. |
-| `record_bilateral.py` | Adds LeRobotDataset recording on top of the loop above. Supports cameras, Hub upload, and `--resume`. |
-| `rollout_bilateral.py` | Runs a trained policy autonomously with the follower alone, no leader. |
+| File | Role | Standard-CLI replacement |
+|---|---|---|
+| `bilateral_teleop_demo.py` | The main loop for position teleop + force feedback. | `lerobot-teleoperate --robot.type=omx_follower --teleop.type=omx_leader ...` |
+| `record_bilateral.py` | Adds LeRobotDataset recording on top of the loop above. Supports cameras, Hub upload, and `--resume`. | `lerobot-record` (same + `--dataset.*`) |
+| `rollout_bilateral.py` | Runs a trained policy autonomously with the follower alone, no leader. | `lerobot-rollout --robot.type=omx_follower --policy.path=... --strategy.type=base` |
 
 **Diagnostic scripts** (directly under `examples/omx/`)
 
@@ -453,50 +453,57 @@ uv run python -m examples.omx.gravity_compensation.gravity_comp_demo \
 
 ### Step 5: Confirm Bilateral Teleoperation Works
 
-First run with `--feedback_gain` left at its default `0.0` (disabled), to confirm position teleop plus the safety mechanisms alone. **Support the arm by hand the first time.**
+Bilateral force feedback is now integrated into the standard `OmxFollower`/`OmxLeader` classes and works directly through `lerobot-teleoperate` (§2.2; verified on hardware as equivalent to the old/new behavior). First run with `--teleop.force_feedback.feedback_gain` left at its default `0.0` (disabled), to confirm position teleop plus gravity comp/safety mechanisms alone. **Support the arm by hand the first time.**
 
 ```bash
-uv run python -m examples.omx.bilateral_teleop.bilateral_teleop_demo \
-    --follower_port /dev/ttyACM0 --follower_id omx_follower \
-    --leader_port /dev/ttyACM1 --leader_id omx_leader \
-    --urdf_path /path/to/omx_l.urdf --checkpoint checkpoints/omx_next.pt \
-    --modifier 0.09 --modifier_shoulder_lift 0.1 \
-    --modifier_shoulder_pan 0.0 --modifier_wrist_roll 0.0 \
-    --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0
+lerobot-teleoperate \
+    --robot.type=omx_follower --robot.port=/dev/ttyACM0 \
+    --teleop.type=omx_leader --teleop.port=/dev/ttyACM1 \
+    --teleop.force_feedback.urdf_path=/path/to/omx_l.urdf \
+    --teleop.force_feedback.modifier=0.09 \
+    --teleop.force_feedback.modifier_overrides='{"shoulder_lift": 0.1, "shoulder_pan": 0.0, "wrist_roll": 0.0}' \
+    --teleop.force_feedback.damping_gain=0.05 --teleop.force_feedback.joint_limit_kp=3 --teleop.force_feedback.joint_limit_kd=0
 ```
 
-**Check**: watch the achieved Hz and `tau_ext` printed to the console every second. Confirm the follower correctly tracks the leader's motion (including the gripper). Once this looks correct, enable force feedback.
+**Check**: confirm the follower correctly tracks the leader's motion (including the gripper). Once this looks correct, enable the force-estimation checkpoint and force feedback.
 
 ```bash
-uv run python -m examples.omx.bilateral_teleop.bilateral_teleop_demo \
-    --follower_port /dev/ttyACM0 --leader_port /dev/ttyACM1 \
-    --urdf_path /path/to/omx_l.urdf --checkpoint checkpoints/omx_next.pt \
-    --modifier 0.09 --modifier_shoulder_lift 0.1 \
-    --modifier_shoulder_pan 0.0 --modifier_wrist_roll 0.0 \
-    --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0 \
-    --feedback_gain 0.3
+lerobot-teleoperate \
+    --robot.type=omx_follower --robot.port=/dev/ttyACM0 \
+    --robot.force_estimation.checkpoint_path=checkpoints/omx_next.pt \
+    --teleop.type=omx_leader --teleop.port=/dev/ttyACM1 \
+    --teleop.force_feedback.urdf_path=/path/to/omx_l.urdf \
+    --teleop.force_feedback.modifier=0.09 \
+    --teleop.force_feedback.modifier_overrides='{"shoulder_lift": 0.1, "shoulder_pan": 0.0, "wrist_roll": 0.0}' \
+    --teleop.force_feedback.damping_gain=0.05 --teleop.force_feedback.joint_limit_kp=3 --teleop.force_feedback.joint_limit_kd=0 \
+    --teleop.force_feedback.feedback_gain=0.3
 ```
 
-**Check**: when you push on the follower's end-effector, does the reaction force reach the leader side? If the direction feels reversed, flip the sign of `--feedback_gain`.
+**Check**: when you push on the follower's end-effector, does the reaction force reach the leader side? If the direction feels reversed, flip the sign of `--teleop.force_feedback.feedback_gain`. **Forgetting `--robot.force_estimation.checkpoint_path` leaves the feedback term permanently zero** while gravity comp/safety mechanisms keep working -- no error is raised, so it's easy to miss.
+
+Per-joint overrides like `--teleop.force_feedback.modifier_overrides` must be given as a JSON string (draccus doesn't support dotted-key syntax like `...modifier_overrides.shoulder_lift=0.1`). The old `examples/omx/bilateral_teleop/bilateral_teleop_demo.py` script is kept for reference only; future changes land on the standard CLI path.
 
 ### Step 6: Record a Dataset with Force Information
 
-Once the behavior is confirmed, switch to the recording script with the same parameters.
+Once the behavior is confirmed, switch to `lerobot-record` with the same parameters. Adding `force.*` to `observation.state` is handled automatically by `OmxFollower.observation_features` -- no changes to `lerobot-record` itself are needed.
 
 ```bash
-uv run python -m examples.omx.bilateral_teleop.record_bilateral \
-    --follower_port /dev/ttyACM0 --leader_port /dev/ttyACM1 \
-    --urdf_path /path/to/omx_l.urdf --checkpoint checkpoints/omx_next.pt \
-    --modifier 0.09 --modifier_shoulder_lift 0.1 \
-    --modifier_shoulder_pan 0.0 --modifier_wrist_roll 0.0 \
-    --damping_gain 0.05 --joint_limit_kp 3 --joint_limit_kd 0 --feedback_gain 0.3 \
-    --repo_id <hf_username>/omx_bilateral_force --root data/omx_bilateral_force \
-    --num_episodes 10 --episode_duration_s 30 --single_task "Pick up the cube" \
-    --cameras="{ wrist: {type: opencv, index_or_path: 6, width: 640, height: 480, fps: 30, fourcc: MJPG} }" \
-    --push_to_hub --hub_private --hub_tags omx bilateral force
+lerobot-record \
+    --robot.type=omx_follower --robot.port=/dev/ttyACM0 \
+    --robot.force_estimation.checkpoint_path=checkpoints/omx_next.pt \
+    --robot.cameras="{ wrist: {type: opencv, index_or_path: 6, width: 640, height: 480, fps: 30, fourcc: MJPG} }" \
+    --teleop.type=omx_leader --teleop.port=/dev/ttyACM1 \
+    --teleop.force_feedback.urdf_path=/path/to/omx_l.urdf \
+    --teleop.force_feedback.modifier=0.09 \
+    --teleop.force_feedback.modifier_overrides='{"shoulder_lift": 0.1, "shoulder_pan": 0.0, "wrist_roll": 0.0}' \
+    --teleop.force_feedback.damping_gain=0.05 --teleop.force_feedback.joint_limit_kp=3 --teleop.force_feedback.joint_limit_kd=0 \
+    --teleop.force_feedback.feedback_gain=0.3 \
+    --dataset.repo_id=<hf_username>/omx_bilateral_force --dataset.root=data/omx_bilateral_force \
+    --dataset.num_episodes=10 --dataset.episode_time_s=30 --dataset.single_task="Pick up the cube" \
+    --dataset.push_to_hub=true --dataset.private=true --dataset.tags="[omx, bilateral, force]"
 ```
 
-**Check**: confirm the `observation.state` dimensionality/`names` printed in the log right after startup (is it 5 positions + 5 `force.*` = 10 dims?). To continue recording into an existing dataset's episodes, add `--resume` (`--root` is required).
+**Check**: confirm the `observation.state` dimensionality/`names` printed in the log right after startup (is it 5 positions + 5 `force.*` = 10 dims?). To continue recording into an existing dataset's episodes, add `--resume` (`--dataset.root` is required). The old `examples/omx/bilateral_teleop/record_bilateral.py` script is kept for reference only.
 
 **Note (if data-quality tuning is needed)**: if you want to inspect the distribution of the recorded dataset's `force.*` columns, you can diagnose it with (see §2.2, §2.7, and the "Tuning" section of `src/lerobot/force_estimation/README.md`):
 
@@ -726,6 +733,8 @@ Move naturally around the poses the real task visits often (e.g. near the home p
 
 ### `bilateral_teleop/bilateral_teleop_demo.py`
 
+**Deprecated, kept for reference.** Use standard `lerobot-teleoperate --robot.type=omx_follower --teleop.type=omx_leader --teleop.force_feedback....` instead (see Step 5). Below is this script's own argument list (unchanged).
+
 | Argument | Type | Default | Description |
 |---|---|---|---|
 | `--follower_port` | str | `/dev/ttyACM0` | Follower connection port |
@@ -743,7 +752,7 @@ Move naturally around the poses the real task visits often (e.g. near the home p
 
 ### `bilateral_teleop/record_bilateral.py`
 
-All arguments of `bilateral_teleop_demo.py` above, plus:
+**Deprecated, kept for reference.** Use standard `lerobot-record --robot.type=omx_follower --robot.force_estimation.checkpoint_path=... --teleop.type=omx_leader --teleop.force_feedback.... --dataset.*` instead (see Step 6). Below is this script's own argument list (unchanged). All arguments of `bilateral_teleop_demo.py` above, plus:
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
@@ -761,6 +770,8 @@ All arguments of `bilateral_teleop_demo.py` above, plus:
 | `--hub_tags` | str+ | `None` | Tags for the Hub dataset card (used with `--push_to_hub`) |
 
 ### `bilateral_teleop/rollout_bilateral.py`
+
+**Deprecated, kept for reference.** Use standard `lerobot-rollout --robot.type=omx_follower --robot.force_estimation.checkpoint_path=... --policy.path=... --strategy.type=base` instead (`rollout/context.py`'s filter has been widened to pass through `force.*`). Below is this script's own argument list (unchanged).
 
 | Argument | Type | Default | Description |
 |---|---|---|---|

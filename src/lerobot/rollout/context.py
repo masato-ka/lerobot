@@ -333,22 +333,26 @@ def build_rollout_context(
     #         )
 
     # --- 4. Features + action-key reconciliation ---------------------
-    # TODO(Steven):Only ``.pos`` joint features are routed to the policy as state and as the
-    # action target; velocity and torque channels (when present) are kept in
-    # the raw observation but excluded from the policy-facing tensors.
+    # TODO(Steven): Only ``.pos``/``.vel``/``force.*`` observation features (and ``.pos``/``.vel``
+    # action features) are routed to the policy; any other per-motor channel a robot might expose
+    # is kept in the raw observation but excluded from the policy-facing tensors.
     all_obs_features = robot.observation_features
     # ``observation_features`` values are either a tuple (camera shape) or the
     # ``float`` type itself used as a sentinel for scalar motor features —
     # see ``dict[str, type | tuple]`` annotation on ``Robot.observation_features``.
-    # Keep cameras (tuple) plus both joint-position (.pos) and base-velocity (.vel)
-    # scalar state features. LeKiwi's observation.state is 9-dim (6 arm .pos +
-    # x/y/theta.vel) and the policy was trained/normalized on all 9; the old .pos-only
-    # filter fed a 6-dim state into a 9-dim normalizer → RuntimeError (size 6 vs 9).
-    # Pure-arm robots have no .vel state keys, so this is a no-op for them.
+    # Keep cameras (tuple) plus joint-position (.pos), base-velocity (.vel), and
+    # force-estimation (force.<joint>, e.g. omx_follower's NEXT tau_ext) scalar state
+    # features. LeKiwi's observation.state is 9-dim (6 arm .pos + x/y/theta.vel) and the
+    # policy was trained/normalized on all 9; the old .pos-only filter fed a 6-dim state
+    # into a 9-dim normalizer → RuntimeError (size 6 vs 9). Same reasoning extends to
+    # force.*: a policy trained on a force-augmented observation.state (via
+    # OmxFollowerConfig.force_estimation) needs those dims at rollout time too, or the
+    # state vector fed to the policy's normalizer would again be the wrong size.
+    # Robots without .vel/force.* state keys are unaffected (no-op).
     observation_features_hw = {
         k: v
         for k, v in all_obs_features.items()
-        if isinstance(v, tuple) or (v is float and k.endswith((".pos", ".vel")))
+        if isinstance(v, tuple) or (v is float and (k.endswith((".pos", ".vel")) or k.startswith("force.")))
     }
     # Keep both joint-position (.pos) and base-velocity (.vel) action features so
     # mobile manipulators command the base too (e.g. LeKiwi: 6 arm .pos +
