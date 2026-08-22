@@ -19,6 +19,7 @@ import time
 from functools import cached_property
 
 from lerobot.cameras import make_cameras_from_configs
+from lerobot.force_estimation import OnlineExternalTorqueEstimator
 from lerobot.lerobot_types import RobotAction, RobotObservation
 from lerobot.motors import Motor, MotorCalibration, MotorNormMode
 from lerobot.motors.dynamixel import (
@@ -62,9 +63,29 @@ class OmxFollower(Robot):
         )
         self.cameras = make_cameras_from_configs(config.cameras)
 
+        self._arm_joints = [motor for motor in self.bus.motors if motor != "gripper"]
+        self._force_estimation_enabled = bool(config.force_estimation.checkpoint_path)
+        self._force_estimator: OnlineExternalTorqueEstimator | None = None
+        if self._force_estimation_enabled:
+            self._force_estimator = OnlineExternalTorqueEstimator(
+                config.force_estimation.checkpoint_path,
+                smoothing_alpha=config.force_estimation.smoothing_alpha,
+            )
+        # Populated by `send_action()`; used as the force estimator's `goal_q` input so record-time and
+        # rollout-time (no leader connected) share the exact same definition -- see
+        # `OmxFollowerConfig.force_estimation`'s docstring / the technical report's Step 7 notes for why
+        # this replaces the old leader-position-vs-previous-own-action split.
+        self._last_sent_goal_q: dict[str, float] | None = None
+
     @property
     def _motors_ft(self) -> dict[str, type]:
         return {f"{motor}.pos": float for motor in self.bus.motors}
+
+    @property
+    def _force_ft(self) -> dict[str, type]:
+        if self._force_estimation_enabled:
+            return {f"force.{joint}": float for joint in self._arm_joints}
+        return {}
 
     @property
     def _cameras_ft(self) -> dict[str, tuple]:
@@ -79,7 +100,7 @@ class OmxFollower(Robot):
 
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
-        return {**self._motors_ft, **self._cameras_ft}
+        return {**self._motors_ft, **self._force_ft, **self._cameras_ft}
 
     @cached_property
     def action_features(self) -> dict[str, type]:
@@ -173,10 +194,30 @@ class OmxFollower(Robot):
     def get_observation(self) -> RobotObservation:
         # Read arm position
         start = time.perf_counter()
-        obs_dict = self.bus.sync_read("Present_Position")
-        obs_dict = {f"{motor}.pos": val for motor, val in obs_dict.items()}
+        present_pos = self.bus.sync_read("Present_Position")
+        obs_dict = {f"{motor}.pos": val for motor, val in present_pos.items()}
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read state: {dt_ms:.1f}ms")
+
+        # Online external-torque (force) estimation -- only pays the extra Present_Velocity/Present_Current
+        # bus round-trip when actually configured, so non-force users see no latency change.
+        if self._force_estimation_enabled:
+            start = time.perf_counter()
+            qdot = self.bus.sync_read("Present_Velocity")
+            current = self.bus.sync_read("Present_Current")
+            dt_ms = (time.perf_counter() - start) * 1e3
+            logger.debug(f"{self} read velocity/current: {dt_ms:.1f}ms")
+
+            q = {joint: present_pos[joint] for joint in self._arm_joints}
+            last_goal_q = self._last_sent_goal_q or {}
+            goal_q = {joint: last_goal_q.get(joint, q[joint]) for joint in self._arm_joints}
+            tau_ext = self._force_estimator.update(q=q, qdot=qdot, goal_q=goal_q, current=current)
+            if tau_ext is None:
+                # History buffer still filling -- degrade to zero, same as the buffer-warmup behavior in
+                # the bilateral_teleop_demo.py/record_bilateral.py scripts this replaces.
+                tau_ext = dict.fromkeys(self._arm_joints, 0.0)
+            for joint in self._arm_joints:
+                obs_dict[f"force.{joint}"] = tau_ext[joint]
 
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
@@ -220,6 +261,14 @@ class OmxFollower(Robot):
 
         # Send goal position to the arm
         self.bus.sync_write("Goal_Position", goal_pos)
+
+        if self._force_estimation_enabled:
+            if self._last_sent_goal_q is None:
+                self._last_sent_goal_q = {}
+            self._last_sent_goal_q.update(
+                {joint: goal_pos[joint] for joint in self._arm_joints if joint in goal_pos}
+            )
+
         return {f"{motor}.pos": val for motor, val in goal_pos.items()}
 
     @check_if_not_connected

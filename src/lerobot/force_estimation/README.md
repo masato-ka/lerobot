@@ -167,20 +167,34 @@ uv run python -m examples.omx.force_sensing.evaluate_dataset_force \
   場合は、モデルが接触を検出できていない可能性があります。特に XL430 (load%ベース) と
   XL330 (電流ベース) で応答性に差が出ないかも比較すると良いです。
 
-## 将来のバイラテラル制御・重力補償フェーズへの拡張ポイント
+## バイラテラル制御・重力補償の標準CLI統合(実装済み)
 
-このパッケージは今回 (NEXT による外力推定) のみを実装しており、バイラテラル力フィードバック
-と重力補償は未実装です。今後の実装では以下のフックが使えます:
+このセクションはかつて「今後の拡張ポイント」として書かれていましたが、バイラテラル力
+フィードバックと重力補償は標準の `OmxFollower`/`OmxLeader` クラスに統合済みです
+(`examples/omx/bilateral_teleop/*.py` の bespoke スクリプトを介さず、`lerobot-teleoperate`/
+`lerobot-record` からそのまま利用できます)。詳しい経緯・変更範囲は
+`examples/omx/TECHNICAL_REPORT_ja.md`(§2.2, Step 7 周辺)を参照してください。
 
-- `OnlineExternalTorqueEstimator` を `omx_leader.OmxLeader.send_feedback()`
-  (`src/lerobot/teleoperators/omx_leader/omx_leader.py`, 現状 `NotImplementedError`) から
-  呼び出し、`τ_feedback = K_fp · τ_ext` (原著 FACTR と同一則) をリーダーの `Goal_Current` に
-  書き込む形で統合できます。ただしリーダー側モータを Position 制御から Current Control
-  Mode に切り替える改修が別途必要です。
-- `src/lerobot/scripts/lerobot_teleoperate.py` の
-  `if robot.name == "unitree_g1": teleop.send_feedback(obs)` というハードコードされた
-  特例分岐を、能力ベースの汎用フックに置き換える必要があります。
-- 重力補償にはリーダーアーム用の URDF (ROBOTIS の `open_manipulator` リポジトリ等から用意)
-  と、`lerobot[kinematics]` extra 経由で利用可能な Pinocchio の RNEA
+- `OnlineExternalTorqueEstimator` は `OmxFollowerConfig.force_estimation.checkpoint_path`
+  (既定は空文字列 = 無効)が設定されている場合のみ `OmxFollower` 内部で構築され、
+  `get_observation()` が `force.<joint>` を `observation.state` へ追加します。
+- `omx_leader.OmxLeader.send_feedback()`(`src/lerobot/teleoperators/omx_leader/omx_leader.py`)は
+  もはや `NotImplementedError` ではなく、`OmxLeaderConfig.force_feedback.urdf_path`
+  (既定は空文字列 = 無効)が設定されている場合のみ、重力補償・関節限界バリア・速度減衰・
+  `τ_feedback = K_fp · τ_ext` のフィードバック電流を合成して `Goal_Current` へ書き込みます。
+  リーダー側モータの Position 制御 → Current Control Mode への切り替えも `connect()`/
+  `disconnect()` 内で自動的に行われます。
+- `src/lerobot/scripts/lerobot_teleoperate.py`/`lerobot_record.py` の
+  `if robot.name == "unitree_g1": teleop.send_feedback(obs)` というハードコードされた特例
+  分岐は、`Teleoperator.wants_continuous_feedback`(既定 `False`)という能力ベースの汎用
+  プロパティを見る形に置き換え済みです。`OmxLeader`は`force_feedback`有効時のみこれを
+  `True`にします。
+- 重力補償には引き続きリーダーアーム用の URDF (ROBOTIS の `open_manipulator` リポジトリ等
+  から用意)と、`lerobot[kinematics]` extra 経由で利用可能な Pinocchio の RNEA
   (`τ_g = modifier × rnea(model, q, q̇, 0)`) が必要です。NEXT 自体は自由空間トルクを
   データから直接学習するため、この重力補償モデルとは独立しています。
+
+**まだ未実装**: `lerobot-rollout`(実機でのポリシー実行)は `observation_features` を
+`.pos`/`.vel` サフィックスのみに絞るフィルタ(`src/lerobot/rollout/context.py`)を持っており、
+`force.*` はまだそこを通過しません。この1点を除けば、力推定つきデータセットの収集
+(`lerobot-record`)までは標準CLIで完結します。

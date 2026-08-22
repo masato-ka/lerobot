@@ -219,6 +219,10 @@ class UnitreeG1Teleoperator(Teleoperator):
         return {"wireless_remote": bytes}
 
     @property
+    def wants_continuous_feedback(self) -> bool:
+        return True
+
+    @property
     def is_connected(self) -> bool:
         if not self._arm_control_enabled:
             return True

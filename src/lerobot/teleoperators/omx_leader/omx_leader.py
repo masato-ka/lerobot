@@ -27,6 +27,18 @@ from lerobot.utils.decorators import check_if_already_connected, check_if_not_co
 
 from ..teleoperator import Teleoperator
 from .config_omx_leader import OmxLeaderConfig
+from .gravity_compensation import ARM_JOINTS, OmxGravityModel
+from .leader_safety import (
+    DEFAULT_JOINT_MODIFIER_OVERRIDES,
+    JOINT_LIMIT_RANGE,
+    KT_NM_PER_A,
+    compute_damping_torque,
+    compute_feedback_torque,
+    compute_joint_limit_torque,
+    enter_current_control_mode,
+    resolve_per_joint_from_config,
+    restore_position_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +68,32 @@ class OmxLeader(Teleoperator):
             calibration=self.calibration,
         )
 
+        self._force_feedback_enabled = bool(config.force_feedback.urdf_path)
+        self._gravity_model: OmxGravityModel | None = None
+        if self._force_feedback_enabled:
+            ff = config.force_feedback
+            self._gravity_model = OmxGravityModel(ff.urdf_path)
+            self._modifier = resolve_per_joint_from_config(
+                ff.modifier, ff.modifier_overrides, DEFAULT_JOINT_MODIFIER_OVERRIDES
+            )
+            self._damping_gain = resolve_per_joint_from_config(ff.damping_gain, ff.damping_gain_overrides)
+            self._joint_limit_kp = resolve_per_joint_from_config(ff.joint_limit_kp, ff.joint_limit_kp_overrides)
+            self._joint_limit_kd = resolve_per_joint_from_config(ff.joint_limit_kd, ff.joint_limit_kd_overrides)
+            self._feedback_gain = resolve_per_joint_from_config(ff.feedback_gain, ff.feedback_gain_overrides)
+
     @property
     def action_features(self) -> dict[str, type]:
         return {f"{motor}.pos": float for motor in self.bus.motors}
 
     @property
     def feedback_features(self) -> dict[str, type]:
+        if self._force_feedback_enabled:
+            return {f"force.{j}": float for j in ARM_JOINTS}
         return {}
+
+    @property
+    def wants_continuous_feedback(self) -> bool:
+        return self._force_feedback_enabled
 
     @property
     def is_connected(self) -> bool:
@@ -78,6 +109,10 @@ class OmxLeader(Teleoperator):
             self.calibrate()
 
         self.configure()
+
+        if self._force_feedback_enabled:
+            enter_current_control_mode(self, self.config.force_feedback.current_limit_ma)
+
         logger.info(f"{self} connected.")
 
     @property
@@ -157,11 +192,45 @@ class OmxLeader(Teleoperator):
         logger.debug(f"{self} read action: {dt_ms:.1f}ms")
         return action
 
+    @check_if_not_connected
     def send_feedback(self, feedback: dict[str, float]) -> None:
-        # TODO(rcadene, aliberts): Implement force feedback
-        raise NotImplementedError
+        """Gravity comp + joint-limit barrier + velocity damping + force-feedback current injection, only
+        when `force_feedback` is configured (a no-op otherwise, matching the previous behavior for anyone
+        not opting in). Ported verbatim from
+        `examples/omx/bilateral_teleop/bilateral_teleop_demo.py`'s per-tick combine/clip order -- see that
+        script's history for why each step is ordered/scaled/clipped the way it is.
+
+        Args:
+            feedback (`dict[str, float]`): `force.<joint>` (the follower's NEXT `tau_ext` estimate) per
+                `ARM_JOINTS`. Missing keys (e.g. force estimation not enabled on the follower) default to
+                `0.0`, degrading gracefully to gravity+limit+damping only -- the same degradation already
+                used while the estimator's history buffer is still filling.
+        """
+        if not self._force_feedback_enabled:
+            return
+
+        q = self.bus.sync_read("Present_Position")
+        qdot = self.bus.sync_read("Present_Velocity")
+        tau_ext = {joint: feedback.get(f"force.{joint}", 0.0) for joint in ARM_JOINTS}
+
+        tau_g = self._gravity_model.compute_gravity_torque(q)
+        tau_limit = compute_joint_limit_torque(q, qdot, JOINT_LIMIT_RANGE, self._joint_limit_kp, self._joint_limit_kd)
+        tau_damping = compute_damping_torque(qdot, self._damping_gain)
+        ff = self.config.force_feedback
+        feedback_ma = compute_feedback_torque(tau_ext, self._feedback_gain, ff.feedback_limit_ma)
+
+        goal_current_ma: dict[str, int] = {}
+        for joint in ARM_JOINTS:
+            gravity_ma = (tau_g[joint] / KT_NM_PER_A) * self._modifier[joint] * 1000.0
+            total_ma = gravity_ma + tau_limit[joint] + tau_damping[joint] + feedback_ma[joint]
+            total_ma = max(-ff.current_limit_ma, min(ff.current_limit_ma, total_ma))
+            goal_current_ma[joint] = int(total_ma)
+
+        self.bus.sync_write("Goal_Current", goal_current_ma)
 
     @check_if_not_connected
     def disconnect(self) -> None:
+        if self._force_feedback_enabled:
+            restore_position_mode(self)
         self.bus.disconnect()
         logger.info(f"{self} disconnected.")

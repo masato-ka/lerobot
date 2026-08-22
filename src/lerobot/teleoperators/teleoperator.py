@@ -111,6 +111,22 @@ class Teleoperator(abc.ABC):
         pass
 
     @property
+    def wants_continuous_feedback(self) -> bool:
+        """
+        Whether this teleoperator wants :pymeth:`send_feedback` called on every control tick (e.g. haptic/
+        force feedback), as opposed to the one-shot handover-repositioning use already covered separately
+        (see `teleop_supports_feedback()` in `lerobot.common.control_utils`, used only for smooth
+        leader/follower handover at episode boundaries, not the main control loop).
+
+        Defaults to `False`. A non-empty :pymeth:`feedback_features` does NOT by itself imply this should be
+        `True` -- e.g. some teleoperators' `feedback_features` mirrors `action_features` and their
+        `send_feedback` writes a goal position, intended only for one-shot handover, not per-tick invocation.
+        Override to return `True` only for teleoperators that should receive continuous per-tick feedback in
+        the standard `lerobot-teleoperate`/`lerobot-record` control loops.
+        """
+        return False
+
+    @property
     @abc.abstractmethod
     def is_connected(self) -> bool:
         """
