@@ -1,5 +1,23 @@
 #!/usr/bin/env python3
-"""Run a trained policy autonomously on the omx_follower arm, with the estimated external force
+"""DEPRECATED: `lerobot-rollout`'s extension-point gap this script worked around (its CLI having
+no way to carry `observation.state` dims beyond `.pos`/`.vel`) has been closed --
+`build_rollout_context()` (`src/lerobot/rollout/context.py`) now also keeps `force.<joint>`
+scalar features, and `OmxFollower` computes them internally when `force_estimation` is
+configured. Prefer:
+
+    lerobot-rollout \\
+        --robot.type=omx_follower --robot.port=/dev/ttyACM0 \\
+        --robot.force_estimation.checkpoint_path=checkpoints/omx_next.pt \\
+        --policy.path=<path/to/trained/policy> --strategy.type=base
+
+This also removes the `goal_q` train/inference split documented below -- `OmxFollower` tracks
+`_last_sent_goal_q` uniformly from `send_action()`, so record time and rollout time now share one
+definition instead of "leader's live position" vs. "policy's own previous action". See
+`src/lerobot/force_estimation/README.md` and `examples/omx/TECHNICAL_REPORT_ja.md` §2.2/Step 7
+for the full command reference. This script is kept for reference and is not expected to receive
+further changes.
+
+Run a trained policy autonomously on the omx_follower arm, with the estimated external force
 (NEXT `tau_ext`) folded into `observation.state` exactly as `record_bilateral.py` records it.
 
 Standalone, follower-only rollout (no leader, no dataset recording of the rollout itself).

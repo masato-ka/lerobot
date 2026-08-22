@@ -1,5 +1,22 @@
 #!/usr/bin/env python3
-"""Record bilateral-teleop demonstrations with the estimated external force folded into
+"""DEPRECATED: this bespoke recording loop has been folded into the standard `OmxFollower`/
+`OmxLeader` classes (config-gated, off by default) and hardware-verified as equivalent. Prefer
+the standard `lerobot-record`, which needs no changes of its own -- it already builds
+`observation.state` from `robot.observation_features` unfiltered:
+
+    lerobot-record \\
+        --robot.type=omx_follower --robot.port=/dev/ttyACM0 \\
+        --robot.force_estimation.checkpoint_path=checkpoints/omx_next.pt \\
+        --teleop.type=omx_leader --teleop.port=/dev/ttyACM1 \\
+        --teleop.force_feedback.urdf_path=/path/to/omx_l.urdf \\
+        --teleop.force_feedback.feedback_gain=0.3 \\
+        --dataset.repo_id=<hf_username>/omx_bilateral_force --dataset.single_task="..."
+
+See `src/lerobot/force_estimation/README.md` and `examples/omx/TECHNICAL_REPORT_ja.md` §2.2/
+Step 7 for the full command reference. This script is kept for reference and is not expected to
+receive further changes.
+
+Record bilateral-teleop demonstrations with the estimated external force folded into
 `observation.state`.
 
 Runs the same combined loop as `bilateral_teleop_demo.py` (position teleop + gravity comp +

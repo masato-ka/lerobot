@@ -567,7 +567,7 @@ def build_rollout_context(
         observation_features_hw: dict[str, type | tuple] = {
             k: v
             for k, v in all_obs_features.items()
-            if isinstance(v, tuple) or (v is float and (keep_all or k.endswith((".pos", ".vel"))))
+            if isinstance(v, tuple) or (v is float and (keep_all or k.endswith((".pos", ".vel")) or k.endswith("force.")))
         }
         policy_action_names = getattr(policy_config, "action_feature_names", None)
         checkpoint_order = list(policy_action_names) if policy_action_names else None

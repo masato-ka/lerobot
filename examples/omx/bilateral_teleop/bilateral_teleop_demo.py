@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
-"""Bilateral teleoperation for OMX: position teleop (leader -> follower) plus FACTR2-style
+"""DEPRECATED: this bespoke loop has been folded into the standard `OmxFollower`/`OmxLeader`
+classes (config-gated, off by default) and hardware-verified as equivalent. Prefer:
+
+    lerobot-teleoperate \\
+        --robot.type=omx_follower --robot.port=/dev/ttyACM0 \\
+        --teleop.type=omx_leader --teleop.port=/dev/ttyACM1 \\
+        --teleop.force_feedback.urdf_path=/path/to/omx_l.urdf \\
+        --teleop.force_feedback.feedback_gain=0.3
+
+(gravity comp/joint-limit/damping-only, matching `--feedback_gain 0.0` below, works the same
+way just by omitting `--teleop.force_feedback.feedback_gain`). See
+`src/lerobot/force_estimation/README.md` and `examples/omx/TECHNICAL_REPORT_ja.md` §2.2/Step 7
+for the full command reference. This script is kept for reference and is not expected to
+receive further changes.
+
+Bilateral teleoperation for OMX: position teleop (leader -> follower) plus FACTR2-style
 force feedback (follower's estimated external torque -> leader).
 
 Connects `omx_follower` and `omx_leader` in one process (both on the same PC) and runs a

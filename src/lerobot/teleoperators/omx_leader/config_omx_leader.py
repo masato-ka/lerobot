@@ -46,7 +46,9 @@ class OmxLeaderForceFeedbackConfig:
 
     # Per-joint overrides of the gains above (joint name -> value), applied on top of the global default
     # for that joint only. `None` (the default) means no per-joint overrides beyond
-    # `leader_safety.DEFAULT_JOINT_MODIFIER_OVERRIDES` for `modifier`.
+    # `leader_safety.DEFAULT_JOINT_MODIFIER_OVERRIDES` for `modifier`. From the CLI, draccus parses these
+    # as a JSON string, e.g. --teleop.force_feedback.modifier_overrides='{"shoulder_lift": 0.1}'
+    # (dotted-key syntax like `...modifier_overrides.shoulder_lift=0.1` is NOT supported).
     modifier_overrides: dict[str, float] | None = None
     damping_gain_overrides: dict[str, float] | None = None
     joint_limit_kp_overrides: dict[str, float] | None = None
