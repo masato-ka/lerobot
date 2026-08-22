@@ -19,6 +19,22 @@ from lerobot.cameras import CameraConfig
 from ..config import RobotConfig
 
 
+@dataclass
+class OmxFollowerForceEstimationConfig:
+    """Online NEXT external-torque estimation (`lerobot.force_estimation.OnlineExternalTorqueEstimator`),
+    exposed as extra `force.<joint>` observation keys. Disabled by default (`checkpoint_path == ""`) --
+    `OmxFollower` stays a plain position+camera observation source, with no extra `Present_Velocity`/
+    `Present_Current` bus reads (and their latency cost) unless this is set.
+    """
+
+    # Path to a checkpoint produced by `examples/omx/force_sensing/train_next.py`. Empty string (the
+    # default) disables force estimation entirely.
+    checkpoint_path: str = ""
+
+    # Optional EMA smoothing on the returned tau_ext -- see `OnlineExternalTorqueEstimator`'s docstring.
+    smoothing_alpha: float | None = None
+
+
 @RobotConfig.register_subclass("omx_follower")
 @dataclass
 class OmxFollowerConfig(RobotConfig):
@@ -37,3 +53,7 @@ class OmxFollowerConfig(RobotConfig):
 
     # Set to `True` for backward compatibility with previous policies/dataset
     use_degrees: bool = False
+
+    # Online external-torque (force) estimation. Disabled by default -- see
+    # `OmxFollowerForceEstimationConfig.checkpoint_path`.
+    force_estimation: OmxFollowerForceEstimationConfig = field(default_factory=OmxFollowerForceEstimationConfig)

@@ -205,8 +205,8 @@ def teleop_loop(
                 # given that it is the identity processor as default
                 obs = robot.get_observation()
 
-                if robot.name == "unitree_g1":
-                    teleop.send_feedback(obs)
+        if teleop.wants_continuous_feedback:
+            teleop.send_feedback(obs)
 
             with timer.section("teleop"):
                 # Get teleop action

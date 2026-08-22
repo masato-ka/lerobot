@@ -29,11 +29,16 @@ Does not modify `OmxLeader`/`OmxLeaderConfig`; this is a standalone helper, same
 from __future__ import annotations
 
 import argparse
+from typing import TYPE_CHECKING
 
 from lerobot.motors.dynamixel import OperatingMode
 
 from .gravity_compensation import ARM_JOINTS
-from .omx_leader import OmxLeader
+
+if TYPE_CHECKING:
+    # Only used for type annotations below -- `omx_leader.py` now imports from this module (for
+    # `send_feedback`'s physics), so a real (non-TYPE_CHECKING) import here would be circular.
+    from .omx_leader import OmxLeader
 
 # Nominal XL330 torque constant (Nm per A), derived from ROBOTIS's published stall
 # torque/stall current figures (~0.35-0.38 Nm/A across the 3.7-6.0V range). XL330's
@@ -109,6 +114,28 @@ def resolve_per_joint(
 
 def resolve_modifiers(args: argparse.Namespace) -> dict[str, float]:
     return resolve_per_joint(args, "modifier", args.modifier, DEFAULT_JOINT_MODIFIER_OVERRIDES)
+
+
+def resolve_per_joint_from_config(
+    global_value: float,
+    overrides: dict[str, float] | None,
+    defaults: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """Same resolution rule as `resolve_per_joint`, but for `OmxLeaderForceFeedbackConfig`-style config
+    fields (a plain `overrides` dict, no `argparse.Namespace`) rather than CLI args -- used by `OmxLeader`
+    itself. Per-joint value = `overrides[joint]` if given, else `defaults[joint]` if set, else
+    `global_value`.
+    """
+    defaults = defaults or {}
+    resolved = {}
+    for joint in ARM_JOINTS:
+        if overrides is not None and joint in overrides:
+            resolved[joint] = overrides[joint]
+        elif joint in defaults:
+            resolved[joint] = defaults[joint]
+        else:
+            resolved[joint] = global_value
+    return resolved
 
 
 def compute_joint_limit_torque(
