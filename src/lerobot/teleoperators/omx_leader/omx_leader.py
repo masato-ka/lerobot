@@ -72,8 +72,12 @@ class OmxLeader(Teleoperator):
                 ff.modifier, ff.modifier_overrides, DEFAULT_JOINT_MODIFIER_OVERRIDES
             )
             self._damping_gain = resolve_per_joint_from_config(ff.damping_gain, ff.damping_gain_overrides)
-            self._joint_limit_kp = resolve_per_joint_from_config(ff.joint_limit_kp, ff.joint_limit_kp_overrides)
-            self._joint_limit_kd = resolve_per_joint_from_config(ff.joint_limit_kd, ff.joint_limit_kd_overrides)
+            self._joint_limit_kp = resolve_per_joint_from_config(
+                ff.joint_limit_kp, ff.joint_limit_kp_overrides
+            )
+            self._joint_limit_kd = resolve_per_joint_from_config(
+                ff.joint_limit_kd, ff.joint_limit_kd_overrides
+            )
             self._feedback_gain = resolve_per_joint_from_config(ff.feedback_gain, ff.feedback_gain_overrides)
 
     @property
@@ -197,7 +201,7 @@ class OmxLeader(Teleoperator):
                 `0.0`, degrading gracefully to gravity+limit+damping only -- the same degradation already
                 used while the estimator's history buffer is still filling.
         """
-        if not self._force_feedback_enabled:
+        if self._gravity_model is None:  # force feedback not configured
             return
 
         q = self.bus.sync_read("Present_Position")
@@ -205,7 +209,9 @@ class OmxLeader(Teleoperator):
         tau_ext = {joint: feedback.get(f"force.{joint}", 0.0) for joint in ARM_JOINTS}
 
         tau_g = self._gravity_model.compute_gravity_torque(q)
-        tau_limit = compute_joint_limit_torque(q, qdot, JOINT_LIMIT_RANGE, self._joint_limit_kp, self._joint_limit_kd)
+        tau_limit = compute_joint_limit_torque(
+            q, qdot, JOINT_LIMIT_RANGE, self._joint_limit_kp, self._joint_limit_kd
+        )
         tau_damping = compute_damping_torque(qdot, self._damping_gain)
         ff = self.config.force_feedback
         feedback_ma = compute_feedback_torque(tau_ext, self._feedback_gain, ff.feedback_limit_ma)

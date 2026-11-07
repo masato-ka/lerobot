@@ -150,7 +150,7 @@ class NextWindowDataset(Dataset):
         """Build the window index over all episodes; see the class docstring for the parameters."""
         self.history_length = history_length
         self.features = [build_features(ep) for ep in episodes]
-        self.targets = [ep.current.astype(np.float32) for ep in episodes]
+        self.targets: list[np.ndarray] = [ep.current.astype(np.float32) for ep in episodes]
 
         self.index: list[tuple[int, int]] = []
         for ep_idx, feat in enumerate(self.features):

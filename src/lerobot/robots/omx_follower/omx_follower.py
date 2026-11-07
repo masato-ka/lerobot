@@ -195,7 +195,7 @@ class OmxFollower(Robot):
 
         # Online external-torque (force) estimation -- only pays the extra Present_Velocity/Present_Current
         # bus round-trip when actually configured, so non-force users see no latency change.
-        if self._force_estimation_enabled:
+        if self._force_estimator is not None:
             start = time.perf_counter()
             qdot = self.bus.sync_read("Present_Velocity")
             current = self.bus.sync_read("Present_Current")
